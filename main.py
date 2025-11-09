@@ -82,19 +82,10 @@ def power_on(settings: Annotated[Settings, Depends(get_settings)]):
 
 @app.get("/bmx/registry/v1/services", tags=["bmx"])
 def bmx_services(settings: Annotated[Settings, Depends(get_settings)]) -> BmxResponse:
-    response = BmxResponse()  # type: ignore
-    response._links = {"bmx_services_availability": {"href": "../servicesAvailability"}}
     # not sure what this number means; could be a timestamp or something similar?
-    response.askAgainAfter = 1277728
     # this probably should be read from a config file or from some other kind of storage
-    tunein = Service()
-    tunein._links = {
-        "bmx_navigate": {"href": "/v1/navigate"},
-        "bmx_token": {"href": "/v1/token"},
-        "self": {"href": "/"},
-    }
-    tunein.askAdapter = False
-    tunein.assets = Asset(
+
+    assets = Asset(
         color="#000000",
         description="With TuneIn on SoundTouch, listen to more than 100,000 stations and the hottest podcasts, "
         "plus live games, concerts and shows from around the world. However, you cannot access your "
@@ -110,14 +101,17 @@ def bmx_services(settings: Annotated[Settings, Depends(get_settings)]) -> BmxRes
         name="TuneIn",
         shortDescription="",
     )
-    tunein.baseUrl = settings.base_url + "/bmx/tunein"
-    tunein.streamTypes = ["liveRadio", "onDemand"]
-    tunein.id = Id(name="TUNEIN", value=25)
-    tunein.authenticationModel = {
-        "anonymousAccount": {"autoCreate": True, "enabled": True}
-    }
-
-    response.bmx_services = [tunein]
+    tunein = Service(_links = {
+        "bmx_navigate": {"href": "/v1/navigate"},
+        "bmx_token": {"href": "/v1/token"},
+        "self": {"href": "/"},
+        }, askAdapter = False, baseUrl = settings.base_url + "/bmx/tunein", streamTypes = ["liveRadio", "onDemand"],
+        id = Id(name="TUNEIN", value=25),
+        authenticationModel = {
+            "anonymousAccount": {"autoCreate": True, "enabled": True}
+        }, assets = assets, signupUrl='/')
+    links = {"bmx_services_availability": {"href": "../servicesAvailability"}}
+    response = BmxResponse(_links = links, askAgainAfter = 1277728, bmx_services = [tunein])
 
     return response
 
