@@ -101,7 +101,7 @@ def bmx_services(settings: Annotated[Settings, Depends(get_settings)]) -> BmxRes
         name="TuneIn",
         shortDescription="",
     )
-    tunein = Service(_links = {
+    tunein = Service(links = {
         "bmx_navigate": {"href": "/v1/navigate"},
         "bmx_token": {"href": "/v1/token"},
         "self": {"href": "/"},
@@ -109,9 +109,9 @@ def bmx_services(settings: Annotated[Settings, Depends(get_settings)]) -> BmxRes
         id = Id(name="TUNEIN", value=25),
         authenticationModel = {
             "anonymousAccount": {"autoCreate": True, "enabled": True}
-        }, assets = assets, signupUrl='/')
+        }, assets = assets)
     links = {"bmx_services_availability": {"href": "../servicesAvailability"}}
-    response = BmxResponse(_links = links, askAgainAfter = 1277728, bmx_services = [tunein])
+    response = BmxResponse(links = links, askAgainAfter = 1277728, bmx_services = [tunein])
 
     return response
 
@@ -122,7 +122,7 @@ def bmx_services(
 ) -> BmxPlaybackResponse:
     if service == "tunein":
         stream = Stream(
-            _links={
+            links={
                 "bmx_reporting": {
                     "href": "/v1/report?stream_id=e92888046&guide_id=s24062&listen_id=1761921446&stream_type=liveRadio"
                 }
@@ -142,7 +142,7 @@ def bmx_services(
         )
 
         resp = BmxPlaybackResponse(
-            _links={
+            links={
                 "bmx_favorite": {"href": "/v1/favorite/s24062"},
                 "bmx_nowplaying": {
                     "href": "/v1/now-playing/station/s24062",

@@ -1,10 +1,10 @@
-from typing import List
+from typing import List, Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class BmxResponse(BaseModel):
-    _links: dict
+    links: dict = Field(..., serialization_alias='_links')
     askAgainAfter: int
     bmx_services: List
 
@@ -31,18 +31,18 @@ class Id(BaseModel):
 
 
 class Service(BaseModel):
-    _links: dict
+    links: dict = Field(..., serialization_alias='_links')
     askAdapter: bool
     assets: Asset
     baseUrl: str
-    signupUrl: str
+    signupUrl: Optional[str] = None
     streamTypes: List
     id: Id
     authenticationModel: dict
 
 
 class Stream(BaseModel):
-    _links: dict
+    links: dict = Field(..., serialization_alias='_links')
     bufferingTimeout: int
     connectingTimeout: int
     hasPlaylist: bool
@@ -59,7 +59,7 @@ class Audio(BaseModel):
 
 
 class BmxPlaybackResponse(BaseModel):
-    _links: dict
+    links: dict = Field(..., serialization_alias='_links')
     audio: Audio
     imageUrl: str
     isFavorite: bool
