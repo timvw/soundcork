@@ -5,13 +5,13 @@ from fastapi import Depends, FastAPI
 
 from config import Settings
 from model import (
-    BmxResponse,
-    Service,
     Asset,
-    Id,
-    IconSet,
-    BmxPlaybackResponse,
     Audio,
+    BmxPlaybackResponse,
+    BmxResponse,
+    IconSet,
+    Id,
+    Service,
     Stream,
 )
 
@@ -101,17 +101,21 @@ def bmx_services(settings: Annotated[Settings, Depends(get_settings)]) -> BmxRes
         name="TuneIn",
         shortDescription="",
     )
-    tunein = Service(links = {
-        "bmx_navigate": {"href": "/v1/navigate"},
-        "bmx_token": {"href": "/v1/token"},
-        "self": {"href": "/"},
-        }, askAdapter = False, baseUrl = settings.base_url + "/bmx/tunein", streamTypes = ["liveRadio", "onDemand"],
-        id = Id(name="TUNEIN", value=25),
-        authenticationModel = {
-            "anonymousAccount": {"autoCreate": True, "enabled": True}
-        }, assets = assets)
+    tunein = Service(
+        links={
+            "bmx_navigate": {"href": "/v1/navigate"},
+            "bmx_token": {"href": "/v1/token"},
+            "self": {"href": "/"},
+        },
+        askAdapter=False,
+        baseUrl=settings.base_url + "/bmx/tunein",
+        streamTypes=["liveRadio", "onDemand"],
+        id=Id(name="TUNEIN", value=25),
+        authenticationModel={"anonymousAccount": {"autoCreate": True, "enabled": True}},
+        assets=assets,
+    )
     links = {"bmx_services_availability": {"href": "../servicesAvailability"}}
-    response = BmxResponse(links = links, askAgainAfter = 1277728, bmx_services = [tunein])
+    response = BmxResponse(links=links, askAgainAfter=1277728, bmx_services=[tunein])
 
     return response
 

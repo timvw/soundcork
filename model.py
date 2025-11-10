@@ -4,7 +4,7 @@ from pydantic import BaseModel, Field
 
 
 class BmxResponse(BaseModel):
-    links: dict = Field(..., serialization_alias='_links')
+    links: dict = Field(..., serialization_alias="_links")
     askAgainAfter: int
     bmx_services: List
 
@@ -31,7 +31,7 @@ class Id(BaseModel):
 
 
 class Service(BaseModel):
-    links: dict = Field(..., serialization_alias='_links')
+    links: dict = Field(..., serialization_alias="_links")
     askAdapter: bool
     assets: Asset
     baseUrl: str
@@ -42,7 +42,7 @@ class Service(BaseModel):
 
 
 class Stream(BaseModel):
-    links: dict = Field(..., serialization_alias='_links')
+    links: dict = Field(..., serialization_alias="_links")
     bufferingTimeout: int
     connectingTimeout: int
     hasPlaylist: bool
@@ -59,7 +59,7 @@ class Audio(BaseModel):
 
 
 class BmxPlaybackResponse(BaseModel):
-    links: dict = Field(..., serialization_alias='_links')
+    links: dict = Field(..., serialization_alias="_links")
     audio: Audio
     imageUrl: str
     isFavorite: bool
