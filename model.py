@@ -70,6 +70,6 @@ class BmxPlaybackResponse(BaseModel):
 
 class SourceProvider(BaseModel):
     id: int
-    created_on: datetime
+    created_on: str
     name: str
-    updated_on: datetime
+    updated_on: str

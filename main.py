@@ -84,13 +84,13 @@ def streaming_sourceproviders(settings: Annotated[Settings, Depends(get_settings
             + str(provider.id)
             + '">'
             + "<createdOn>"
-            + provider.created_on.toisoformat()
+            + provider.created_on
             + "</createdOn>"
             + "<name>"
             + provider.name
             + "</name>"
             + "<updatedOn>"
-            + provider.updated_on.toisoformat()
+            + provider.updated_on
             + "</updatedOn>"
             "</sourceprovider>"
         )

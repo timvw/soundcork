@@ -18,6 +18,24 @@ these headers,  so they are not documented here.
 
 ### Marge
 
+The Marge endpoints seem to be for account/device information.
+
+#### GET /marge/streaming/sourceproviders
+
+Returns the configured source providers (TUNEIN, PANDORA, etc)
+
+Response:
+
+```
+<sourceProviders>
+    <sourceprovider id="1">
+        <createdOn>2012-09-19T12:43:00.000+00:00</createdOn>
+        <name>PANDORA</name>
+        <updatedOn>2012-09-19T12:43:00.000+00:00</updatedOn>
+    </sourceprovider>
+    ...
+</sourceProviders>
+```
 
 ### Bmx
 
