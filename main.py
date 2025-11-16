@@ -97,6 +97,7 @@ def streaming_sourceproviders(settings: Annotated[Settings, Depends(get_settings
         )
     return_xml = return_xml + "</sourceProviders>"
     response = Response(content=return_xml, media_type="application/xml")
+    # TODO: move content type to constants
     response.headers["content-type"] = "application/vnd.bose.streaming-v1.2+xml"
     return response
 
@@ -108,6 +109,7 @@ def account_presets(
     xml = presets_xml(settings, account, device)
     return_xml = ET.tostring(xml, "UTF-8", xml_declaration=True)
     response = Response(content=return_xml, media_type="application/xml")
+    # TODO: move content type to constants
     response.headers["content-type"] = "application/vnd.bose.streaming-v1.2+xml"
     return response
 
