@@ -351,7 +351,7 @@ Response:
 
 ### Bmx
 
-The BMX endpoints appear to be for streaming radio stations, possible only for TuneIn.
+The BMX endpoints appear to be for streaming radio stations, possibly only for TuneIn.
 
 On bose, these go to `https://content.api.bose.io/bmx/`
 
@@ -360,6 +360,8 @@ station]`" or the like, I am using the specific placeholder of the radio station
 `WKRP in Cincinnati`. This will vary by station.
 
 #### GET /bmx
+
+Possibly this is a fake call, need to verify.
 
 Callers:
 
