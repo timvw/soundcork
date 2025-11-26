@@ -293,9 +293,14 @@ def recents_xml(settings: Settings, account: str, device: str) -> ET.Element:
 
 def provider_settings_xml(settings: Settings, account: str) -> ET.Element:
     # this seems to report information like if you're eligible for a free
-    # trial, which shouldn't be all that important.
-    # let's try just returning an empty element for this
-    return ET.Element("providerSettings")
+    # trial
+    provider_settings = ET.Element("providerSettings")
+    p_setting = ET.SubElement(provider_settings, "providerSetting")
+    ET.SubElement(p_setting, "boseId").text = account
+    ET.SubElement(p_setting, "keyName").text = "ELIGIBLE_FOR_TRIAL"
+    ET.SubElement(p_setting, "value").text = "true"
+    ET.SubElement(p_setting, "providerId").text = "14"
+    return provider_settings
 
 
 def get_device_info(settings: Settings, account: str, device: str) -> DeviceInfo:
@@ -380,3 +385,17 @@ def account_full_xml(settings: Settings, account: str) -> ET.Element:
     )
 
     return account_elem
+
+
+def software_update_xml() -> ET.Element:
+    # <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+    # <software_update><softwareUpdateLocation></softwareUpdateLocation></software_update>
+    su = ET.Element("software_update")
+    ET.SubElement(su, "softwareUpdateLocation")
+    return su
+
+
+def etag_configured_sources(settings: Settings) -> int:
+    return path.getmtime(
+        path.join(account_device_dir(settings, account, device), "Sources.xml")
+    )
