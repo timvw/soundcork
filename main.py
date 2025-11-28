@@ -65,7 +65,7 @@ def get_settings():
     return Settings()
 
 
-startup_timestamp = int(datetime.now().timestamp())
+startup_timestamp = int(datetime.now().timestamp() * 1000)
 
 
 @app.get("/")
@@ -112,7 +112,7 @@ def streaming_sourceproviders(settings: Annotated[Settings, Depends(get_settings
     response = Response(content=return_xml, media_type="application/xml")
     # TODO: move content type to constants
     response.headers["content-type"] = "application/vnd.bose.streaming-v1.2+xml"
-    response.headers["etag"] = str(10001)
+    response.headers["etag"] = str(startup_timestamp)
     return response
 
 
@@ -137,7 +137,7 @@ def account_provider_settings(
     settings: Annotated[Settings, Depends(get_settings)], account: str
 ):
     xml = provider_settings_xml(settings, account)
-    return bose_xml_response(xml)
+    return bose_xml_response(xml, startup_timestamp, "getProviderSettings")
 
 
 @app.get("/marge/streaming/software/update/account/{account}", tags=["marge"])
@@ -149,7 +149,7 @@ def software_update(settings: Annotated[Settings, Depends(get_settings)], accoun
 @app.get("/marge/streaming/account/{account}/full", tags=["marge"])
 def account_full(settings: Annotated[Settings, Depends(get_settings)], account: str):
     xml = account_full_xml(settings, account)
-    return bose_xml_response(xml)
+    return bose_xml_response(xml, startup_timestamp, "getFullAccount")
 
 
 @app.get("/bmx/registry/v1/services", tags=["bmx"])
@@ -198,7 +198,7 @@ def bmx_playback(service: str, station_id: str) -> BmxPlaybackResponse:
         return tunein_playback(station_id)
 
 
-def bose_xml_response(xml: ET.Element, etag: int = 0) -> Response:
+def bose_xml_response(xml: ET.Element, etag: int = 0, method: str = "") -> Response:
     # ET.tostring won't allow you to set standalone="yes"
     return_xml = f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>{ET.tostring(xml, encoding="unicode")}'
     response = Response(content=return_xml, media_type="application/xml")
@@ -209,4 +209,5 @@ def bose_xml_response(xml: ET.Element, etag: int = 0) -> Response:
         etag = startup_timestamp
 
     response.headers["etag"] = str(etag)
+    response.headers["method_name"] = method
     return response
