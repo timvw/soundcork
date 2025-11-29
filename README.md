@@ -85,7 +85,7 @@ modify as necessary.
 		python -m build && \
 		pip install dist/*.whl
 		``` 
-    - If using systemd, make a copy of `soundcork.service.example`, named `soundcord.service`
+    - If using systemd, make a copy of `soundcork.service.example`, named `soundcork.service`
 	- modify the placeholder strings appropriately
 	- then mv to systemd and enable.
 		```sh
