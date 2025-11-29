@@ -1,0 +1,21 @@
+[Unit]
+
+Description=Gunicorn Daemon for Soundcork
+
+After=network.target
+
+
+[Service]
+
+User=YOUR_USER_NAME_HERE
+
+Group=YOUR_GROUP_NAME_HERE
+
+WorkingDirectory=YOUR_DIRECTORY_NAME_HERE
+
+ExecStart=YOUR_DIRECTORY_NAME_HERE/.venv/bin/gunicorn -c gunicorn_conf.py main:app
+
+
+[Install]
+
+WantedBy=multi-user.target

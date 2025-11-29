@@ -1,3 +1,4 @@
-fastapi[standard]
-pydantic_settings
-black
+fastapi[standard]==0.120.1
+pydantic-settings==2.11.0
+black==25.9.0
+gunicorn==23.0.0

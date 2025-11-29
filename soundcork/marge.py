@@ -2,8 +2,8 @@ import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from os import path, walk
 
-from config import Settings
-from model import (
+from soundcork.config import Settings
+from soundcork.model import (
     ConfiguredSource,
     ContentItem,
     DeviceInfo,

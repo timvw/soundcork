@@ -2,7 +2,7 @@ import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
 
-from model import Audio, BmxPlaybackResponse, Stream
+from soundcork.model import Audio, BmxPlaybackResponse, Stream
 
 # TODO: move into constants file eventually.
 TUNEIN_DESCRIBE = "https://opml.radiotime.com/describe.ashx?id=%s"

@@ -79,13 +79,20 @@ When you're done with the virtual environment, you can type `deactivate` to leav
 	fastapi run main.py
 	```
 - To run as a daemon
-	```sh
-	#Allen could you strip out paths
-	#and copy in here our /etc/systemd/system/soundcork.service
-	#and say how to
-	sudo systemctl enable soundcork
-	sudo systemctl start soundcork
-	#i mean eventually
-	#not now
-	#ouch
-	```
+    - install the package in your virtualenv
+		```sh
+		pip install build && \
+		python -m build && \
+		pip install dist/*.whl
+		``` 
+    - If using systemd, make a copy of `soundcork.service.example`, named `soundcork.service`
+	- modify the placeholder strings appropriately
+	- then mv to systemd and enable.
+		```sh
+		sudo mv soundcork.service /etc/systemd/system && \
+		sudo systemctl daemon-reload && \
+		sudo systemctl enable soundcork && \
+		sudo systemctl start soundcork
+		```
+
+You can verify the server by checking the `/docs` endpoint at your URL.

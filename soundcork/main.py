@@ -6,9 +6,9 @@ from typing import Annotated
 
 from fastapi import Depends, FastAPI, Response
 
-from bmx import tunein_playback
-from config import Settings
-from marge import (
+from soundcork.bmx import tunein_playback
+from soundcork.config import Settings
+from soundcork.marge import (
     account_full_xml,
     etag_configured_sources,
     presets_xml,
@@ -17,7 +17,7 @@ from marge import (
     software_update_xml,
     source_providers,
 )
-from model import (
+from soundcork.model import (
     Asset,
     Audio,
     BmxPlaybackResponse,
@@ -31,24 +31,16 @@ from model import (
 description = """
 This emulates the SoundTouch servers so you don't need connectivity
 to use speakers.
-
-## Marge
-
-dunno yet
-
-## Bmx
-
-also dunno
 """
 
 tags_metadata = [
     {
         "name": "marge",
-        "description": "Oh Homie, stop bricking my speakers!",
+        "description": "Communicates with the speaker.",
     },
     {
         "name": "bmx",
-        "description": "lord knows",
+        "description": "Communicates with streaming radio services (eg. TuneIn).",
     },
 ]
 app = FastAPI(
@@ -87,7 +79,7 @@ def power_on(settings: Annotated[Settings, Depends(get_settings)]):
 
 
 @app.get("/marge/streaming/sourceproviders", tags=["marge"])
-def streaming_sourceproviders(settings: Annotated[Settings, Depends(get_settings)]):
+def streamingsourceproviders(settings: Annotated[Settings, Depends(get_settings)]):
     return_xml = (
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><sourceProviders>'
     )
