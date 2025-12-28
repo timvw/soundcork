@@ -6,7 +6,7 @@ import upnpclient
 
 from soundcork.config import Settings
 from soundcork.marge import account_device_dir
-from soundcork.model import DeviceInfo, Preset
+from soundcork.model import DeviceInfo, Preset, Recent
 
 # pyright: reportOptionalMemberAccess=false
 
@@ -154,3 +154,71 @@ class DataStore:
             )
 
         return presets
+
+    def get_recents(self, account: str, device: str) -> list[Recent]:
+        stored_tree = ET.parse(
+            path.join(account_device_dir(account, device), "Recents.xml")
+        )
+        root = stored_tree.getroot()
+
+        recents = []
+
+        for recent in root.findall("recent"):
+            id = recent.attrib.get("id", "1")
+            device_id = recent.attrib.get("deviceID", "")
+            utc_time = recent.attrib.get("utcTime", "")
+            content_item = recent.find("contentItem")
+            name = content_item.find("itemName").text or "test"
+            source = content_item.attrib.get("source", "")
+            type = content_item.attrib.get("type", "")
+            location = content_item.attrib.get("location", "")
+            source_account = content_item.attrib.get("sourceAccount")
+            is_presetable = content_item.attrib.get("isPresetable")
+            container_art_elem = content_item.find("containerArt")
+            if container_art_elem is not None:
+                container_art = container_art_elem.text
+            else:
+                container_art = None
+
+            recents.append(
+                Recent(
+                    name=name,
+                    utc_time=utc_time,
+                    id=id,
+                    device_id=device_id,
+                    source=source,
+                    type=type,
+                    location=location,
+                    source_account=source_account,
+                    is_presetable=is_presetable,
+                    container_art=container_art,
+                )
+            )
+
+        return recents
+
+    def save_recents(
+        self, account: str, device: str, recents_list: list[Recent]
+    ) -> ET.Element:
+        save_file = path.join(account_device_dir(account, device), "Recents.xml")
+        recents_elem = ET.Element("recents")
+        for recent in recents_list:
+            recent_elem = ET.SubElement(recents_elem, "recent")
+            recent_elem.attrib["deviceID"] = recent.device_id
+            recent_elem.attrib["utcTime"] = recent.utc_time
+            recent_elem.attrib["id"] = recent.id
+            content_item_elem = ET.SubElement(recent_elem, "contentItem")
+            if recent.source:
+                content_item_elem.attrib["source"] = recent.source
+            content_item_elem.attrib["type"] = recent.type
+            content_item_elem.attrib["location"] = recent.location
+            if recent.source_account:
+                content_item_elem.attrib["sourceAccount"] = recent.source_account
+            content_item_elem.attrib["isPresetable"] = recent.is_presetable
+            ET.SubElement(content_item_elem, "itemName").text = recent.name
+            ET.SubElement(content_item_elem, "containerArt").text = recent.container_art
+
+        recents_tree = ET.ElementTree(recents_elem)
+        ET.indent(recents_tree, space="    ", level=0)
+        recents_tree.write(save_file, xml_declaration=True, encoding="UTF-8")
+        return recents_elem

@@ -150,7 +150,7 @@ async def put_account_preset(
 def account_recents(account: str, device: str):
     validate_params(account, device)
 
-    xml = recents_xml(account, device)
+    xml = recents_xml(datastore, account, device)
     return bose_xml_response(xml)
 
 
@@ -180,7 +180,7 @@ async def post_account_recent(
 ):
     validate_params(account)
     xml = await request.body()
-    xml_resp = add_recent(account, device, xml)
+    xml_resp = add_recent(datastore, account, device, xml)
     return bose_xml_response(xml_resp, startup_timestamp)
 
 

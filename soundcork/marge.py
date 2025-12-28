@@ -252,53 +252,10 @@ def configured_source_xml(conf_source: ConfiguredSource, datestr: str) -> ET.Ele
     return source
 
 
-def recents(account: str, device: str) -> list[Recent]:
-    stored_tree = ET.parse(
-        path.join(account_device_dir(account, device), "Recents.xml")
-    )
-    root = stored_tree.getroot()
-
-    recents = []
-
-    for recent in root.findall("recent"):
-        id = recent.attrib.get("id", "1")
-        device_id = recent.attrib.get("deviceID", "")
-        utc_time = recent.attrib.get("utcTime", "")
-        content_item = recent.find("contentItem")
-        name = content_item.find("itemName").text or "test"
-        source = content_item.attrib.get("source", "")
-        type = content_item.attrib.get("type", "")
-        location = content_item.attrib.get("location", "")
-        source_account = content_item.attrib.get("sourceAccount")
-        is_presetable = content_item.attrib.get("isPresetable")
-        container_art_elem = content_item.find("containerArt")
-        if container_art_elem is not None:
-            container_art = container_art_elem.text
-        else:
-            container_art = None
-
-        recents.append(
-            Recent(
-                name=name,
-                utc_time=utc_time,
-                id=id,
-                device_id=device_id,
-                source=source,
-                type=type,
-                location=location,
-                source_account=source_account,
-                is_presetable=is_presetable,
-                container_art=container_art,
-            )
-        )
-
-    return recents
-
-
-def recents_xml(account: str, device: str) -> ET.Element:
+def recents_xml(datastore: "DataStore", account: str, device: str) -> ET.Element:
     conf_sources_list = configured_sources(account, device)
 
-    recents_list = recents(account, device)
+    recents_list = datastore.get_recents(account, device)
 
     # We hardcode a date here because we'll never use it, so there's no need for a real date object.
     datestr = "2012-09-19T12:43:00.000+00:00"
@@ -324,9 +281,11 @@ def recents_xml(account: str, device: str) -> ET.Element:
     return recents_element
 
 
-def add_recent(account: str, device: str, source_xml: bytes) -> ET.Element:
+def add_recent(
+    datastore: "DataStore", account: str, device: str, source_xml: bytes
+) -> ET.Element:
     conf_sources_list = configured_sources(account, device)
-    recents_list = recents(account, device)
+    recents_list = datastore.get_recents(account, device)
 
     new_recent_elem = ET.fromstring(source_xml)
 
@@ -399,7 +358,7 @@ def add_recent(account: str, device: str, source_xml: bytes) -> ET.Element:
         # probably shouldn't just let this grow unbounded
         recents_list = recents_list[:10]
 
-    recents_save(account, device, recents_list)
+    datastore.save_recents(account, device, recents_list)
 
     lastplayed = datetime.fromtimestamp(
         int(recent_obj.utc_time), timezone.utc
@@ -420,31 +379,6 @@ def add_recent(account: str, device: str, source_xml: bytes) -> ET.Element:
     ET.SubElement(recent_element, "updatedOn").text = created_on
 
     return recent_element
-
-
-def recents_save(account: str, device: str, recents_list: list[Recent]) -> ET.Element:
-    save_file = path.join(account_device_dir(account, device), "Recents.xml")
-    recents_elem = ET.Element("recents")
-    for recent in recents_list:
-        recent_elem = ET.SubElement(recents_elem, "recent")
-        recent_elem.attrib["deviceID"] = recent.device_id
-        recent_elem.attrib["utcTime"] = recent.utc_time
-        recent_elem.attrib["id"] = recent.id
-        content_item_elem = ET.SubElement(recent_elem, "contentItem")
-        if recent.source:
-            content_item_elem.attrib["source"] = recent.source
-        content_item_elem.attrib["type"] = recent.type
-        content_item_elem.attrib["location"] = recent.location
-        if recent.source_account:
-            content_item_elem.attrib["sourceAccount"] = recent.source_account
-        content_item_elem.attrib["isPresetable"] = recent.is_presetable
-        ET.SubElement(content_item_elem, "itemName").text = recent.name
-        ET.SubElement(content_item_elem, "containerArt").text = recent.container_art
-
-    recents_tree = ET.ElementTree(recents_elem)
-    ET.indent(recents_tree, space="    ", level=0)
-    recents_tree.write(save_file, xml_declaration=True, encoding="UTF-8")
-    return recents_elem
 
 
 def provider_settings_xml(account: str) -> ET.Element:
@@ -493,7 +427,7 @@ def account_full_xml(account: str, datastore: "DataStore") -> ET.Element:
         ET.SubElement(device_elem, "ipaddress").text = device_info.ip_address
         ET.SubElement(device_elem, "name").text = device_info.name
         device_elem.append(presets_xml(datastore, account, device_id))
-        device_elem.append(recents_xml(account, device_id))
+        device_elem.append(recents_xml(datastore, account, device_id))
         ET.SubElement(device_elem, "serialnumber").text = (
             device_info.device_serial_number
         )
