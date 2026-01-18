@@ -6,6 +6,7 @@ from datetime import datetime
 from http import HTTPStatus
 
 from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 
 from soundcork.bmx import play_custom_stream, tunein_playback
@@ -65,6 +66,18 @@ app = FastAPI(
     version="0.0.1",
     openapi_tags=tags_metadata,
     lifespan=lifespan,
+)
+
+origins = [
+    "*",
+]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 
@@ -189,6 +202,30 @@ async def post_account_recent(
     xml_resp = add_recent(datastore, account, device, xml)
     etag = datastore.etag_for_recents(account)
     return bose_xml_response(xml_resp, etag)
+
+
+@app.post("/marge/streaming/account/login", tags=["marge"])
+async def post_account_login(
+    request: Request,
+):
+    # xml = await request.body()
+    account_elem = ET.Element("account")
+    account_elem.attrib["id"] = "1234567"  # map login to account?
+    ET.SubElement(account_elem, "accountStatus").text = "OK"
+    ET.SubElement(account_elem, "mode").text = "global"
+    ET.SubElement(account_elem, "preferredLanguage").text = "en"
+
+    return_xml = f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>{ET.tostring(account_elem, encoding="unicode")}'
+    response = Response(content=return_xml, media_type="application/xml")
+    # TODO: move content type to constants
+    response.headers["content-type"] = "application/vnd.bose.streaming-v1.2+xml"
+
+    etag = startup_timestamp
+
+    response.headers["etag"] = str(etag)
+    # just making this up
+    response.headers["Credentials"] = "3432143243243432143fdafd"
+    return response
 
 
 @app.get("/bmx/registry/v1/services", response_model_exclude_none=True, tags=["bmx"])
