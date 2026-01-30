@@ -20,6 +20,8 @@ class Settings(BaseSettings):
 
     base_url: str = ""
     data_dir: str = ""
+    siriusxm_username: str = ""
+    siriusxm_pw: str = ""
     model_config = SettingsConfigDict(
         # `.env.private` takes priority over `.env.shared`
         env_file=(".env.shared", ".env.private")

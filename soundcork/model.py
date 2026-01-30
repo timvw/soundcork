@@ -138,6 +138,21 @@ class BmxNowPlaying(BaseModel):
     track: str
 
 
+class BmxReporting(BaseModel):
+    links: Optional[Links] = Field(
+        default=None,
+        alias="_links",
+        serialization_alias="_links",
+        validation_alias=AliasChoices("links", "_links"),
+    )
+    next_report_in: int = Field(
+        default=50,
+        alias="nextReportIn",
+        serialization_alias="nextReportIn",
+        validation_alias=AliasChoices("nextReportIn", "next_report_in"),
+    )
+
+
 class SourceProvider(BaseModel):
     id: int
     created_on: str

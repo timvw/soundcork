@@ -39,7 +39,7 @@ class SiriusXM:
 
     def is_logged_in(self) -> bool:
         auth = self.session.headers.get("Authorization", "")
-        self.log(f"headers={self.session.headers}")
+        # self.log(f"headers={self.session.headers}")
         return auth.startswith("Bearer ")
 
     def sfetch(self, url: str) -> Optional[bytes]:
@@ -172,7 +172,7 @@ class SiriusXM:
         autheddata = self.post(
             "session/v1/sessions/authenticated", {}, authenticate=False
         )
-        self.log(f"authed - {autheddata}")
+        # self.log(f"authed - {autheddata}")
         try:
             return autheddata["sessionType"] == "authenticated" and self.is_logged_in()
         except KeyError:
@@ -320,7 +320,7 @@ class SiriusXM:
             self.log(f"No metadata found for now playing on channel {channel_id}")
             return None
         try:
-            live_metadata = data["streams"][0]["metadata"]["live"]["items"][0]
+            live_metadata = data["streams"][0]["metadata"]["live"]["items"][-1]
             return {
                 "songTitle": live_metadata.get("name", ""),
                 "artist": live_metadata.get("artistName", ""),
@@ -469,7 +469,7 @@ class SiriusXM:
         if session_id:
             segmenturl += f"?session_id={session_id}"
 
-        self.log(f"Fetching segment URL: {segmenturl}")
+        # self.log(f"Fetching segment URL: {segmenturl}")
         data = self.sfetch(segmenturl)
         if not data:
             self.log(f"Failed to fetch segment {segment} for channel {channel_id}")

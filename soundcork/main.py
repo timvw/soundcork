@@ -14,6 +14,7 @@ from soundcork.bmx import (
     now_playing_siriusxm,
     play_custom_stream,
     play_siriusxm_station,
+    reporting_siriusxm,
     tunein_playback,
     tunein_playback_podcast,
     tunein_podcast_info,
@@ -36,6 +37,7 @@ from soundcork.model import (
     BmxNowPlaying,
     BmxPlaybackResponse,
     BmxPodcastInfoResponse,
+    BmxReporting,
     BmxResponse,
 )
 from soundcork.siriusxm_fastapi import SiriusXM
@@ -49,7 +51,7 @@ logger = logging.getLogger(__name__)
 
 datastore = DataStore()
 settings = Settings()
-sxm = SiriusXM("username", "pw")
+sxm = SiriusXM(settings.siriusxm_username, settings.siriusxm_pw)
 # asyncio.run(sxm.startup())
 # asyncio.get_event_loop().create_task(sxm.startup())
 
@@ -281,17 +283,27 @@ def custom_stream_playback(request: Request) -> BmxPlaybackResponse:
     tags=["bmx"],
 )
 def siriusxm_playback(station_name: str) -> BmxPlaybackResponse:
-    print("play_seriousxm_station")
-    return play_siriusxm_station(sxm, 33)
+    print("play_siriusxm_station")
+    return play_siriusxm_station(sxm, station_name, settings)
 
 
 @app.get(
-    "/core02/svc-bmx-adapter-siriusxm-everest-eco1/prod/live-adapter/now-playing/{station}",
+    "/core02/svc-bmx-adapter-siriusxm-everest-eco1/prod/live-adapter/now-playing/{station_name}",
     response_model_exclude_none=True,
     tags=["bmx"],
 )
-def siriusxm_playback(station: int) -> BmxNowPlaying:
-    return now_playing_siriusxm(sxm, station)
+def siriusxm_playback(station_name: str) -> BmxNowPlaying:
+    return now_playing_siriusxm(sxm, station_name)
+
+
+@app.post(
+    "/core02/svc-bmx-adapter-siriusxm-everest-eco1/prod/live-adapter/reporting/live/{station}",
+    response_model_exclude_none=True,
+    tags=["bmx"],
+)
+async def siriusxm_playback(station: str, request: Request) -> BmxReporting:
+    payload = await request.body()
+    return reporting_siriusxm(payload, station)
 
 
 @app.get("/listen/{channel_id}.m3u8")
@@ -333,6 +345,16 @@ def bmx_media_file(filename: str) -> FileResponse:
         return FileResponse(file_path)
 
     raise HTTPException(status_code=404, detail="not found")
+
+
+@app.post(
+    "/v1/scmudc/{device_id}",
+    tags=["stats"],
+    status_code=HTTPStatus.OK,
+)
+def stats(device_id: str):
+
+    return
 
 
 @app.get("/updates/soundtouch", tags=["swupdate"])

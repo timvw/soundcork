@@ -2,13 +2,17 @@ import base64
 import json
 import urllib.parse
 import urllib.request
+import uuid
 import xml.etree.ElementTree as ET
+from datetime import datetime
 
+from soundcork.config import Settings
 from soundcork.model import (
     Audio,
     BmxNowPlaying,
     BmxPlaybackResponse,
     BmxPodcastInfoResponse,
+    BmxReporting,
     Stream,
     Track,
 )
@@ -226,12 +230,14 @@ def play_custom_stream(data: str) -> BmxPlaybackResponse:
     return resp
 
 
-def play_siriusxm_station(sxm: SiriusXM, station: int) -> BmxPlaybackResponse:
+def play_siriusxm_station(
+    sxm: SiriusXM, station: int, settings: Settings
+) -> BmxPlaybackResponse:
     # channel_by_number = sxm.get_channel_info_by_number(station)
     # tuner = sxm.get_tuner(channel_by_number["id"])
     # stream_url = f"{tuner['base_url']}{tuner['sources']}"
-    stream_url = f"http://10.0.0.186:8000/listen/{station}.m3u8"
-    stream_id = "s3342"
+    stream_url = f"{settings.base_url}/listen/33.m3u8"
+
     listen_id = str(3432432423)
 
     stream_list = [
@@ -271,19 +277,21 @@ def play_siriusxm_station(sxm: SiriusXM, station: int) -> BmxPlaybackResponse:
     return resp
 
 
-def now_playing_siriusxm(sxm: SiriusXM, station: int) -> BmxNowPlaying:
+def now_playing_siriusxm(sxm: SiriusXM, station_name: str) -> BmxNowPlaying:
     channels = sxm.get_channels()
     # print(f"channels = {channels}")
     # channel_info = sxm.get_channel_info(station)
     # print(f"channel_info = {channel_info}")
     # channel = sxm.get_channel(station)
     # print(f"channel = {channel}")
+    station = 33
 
     channel_by_number = sxm.get_channel_info_by_number(station)
     if not channel_by_number:
         channel_by_number = channels[0]
     # print(f"channel by number {station} = {channel_by_number}")
     if channel_by_number:
+        print(f"now playing by number, info={channel_by_number['id']}")
         now_playing = sxm.get_now_playing(channel_by_number["id"])
         # print(f"now_playing = {now_playing}")
     else:
@@ -301,3 +309,29 @@ def now_playing_siriusxm(sxm: SiriusXM, station: int) -> BmxNowPlaying:
         ask_again_after=10,
     )
     return resp
+
+
+def reporting_siriusxm(payload: str, station: str) -> BmxReporting:
+    report = json.loads(payload)
+
+    default_timestamp = datetime.now().isoformat()
+    stream_timestamp = report.get("absolutePlayPoint", default_timestamp)
+    event_timestamp = report.get("timeStamp", default_timestamp)
+
+    last_report = {
+        "marker": str(uuid.uuid4()),
+        "stream_timestamp": stream_timestamp,
+        "event_timestamp": event_timestamp,
+    }
+    last_report_json = json.dumps(last_report)
+    last_report_encoded = urllib.parse.quote_plus(
+        str(base64.b64encode(bytes(last_report_json, "utf-8")), "utf-8")
+    )
+    return BmxReporting(
+        links={
+            "self": {
+                "href": f"/reporting/live/{station}?lastReport={last_report_encoded}"
+            }
+        },
+        next_report_in=50,
+    )
