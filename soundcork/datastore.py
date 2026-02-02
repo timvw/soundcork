@@ -1,6 +1,7 @@
 import logging
 import xml.etree.ElementTree as ET
-from os import path, walk
+from os import mkdir, path, walk
+from typing import Optional
 
 from soundcork.config import Settings
 from soundcork.constants import (
@@ -111,6 +112,13 @@ class DataStore:
         presets_tree.write(save_file, xml_declaration=True, encoding="UTF-8")
         return presets_elem
 
+    # TODO: add error handling if you can't write the file
+    def save_presets_xml(self, account: str, presets_xml: str):
+        with open(
+            path.join(self.account_dir(account), PRESETS_FILE), "w"
+        ) as presets_file:
+            presets_file.write(presets_xml)
+
     def get_presets(self, account: str, device: str) -> list[Preset]:
         storedTree = ET.parse(path.join(self.account_dir(account), PRESETS_FILE))
         root = storedTree.getroot()
@@ -220,6 +228,13 @@ class DataStore:
         recents_tree.write(save_file, xml_declaration=True, encoding="UTF-8")
         return recents_elem
 
+    # TODO: add error handling if you can't write the file
+    def save_recents_xml(self, account: str, recents_xml: str):
+        with open(
+            path.join(self.account_dir(account), RECENTS_FILE), "w"
+        ) as recents_file:
+            recents_file.write(recents_xml)
+
     def get_configured_sources(
         self, account: str, device: str
     ) -> list[ConfiguredSource]:
@@ -255,6 +270,13 @@ class DataStore:
 
         return sources_list
 
+    # TODO: add error handling if you can't write the file
+    def save_configured_sources_xml(self, account: str, sources_xml: str):
+        with open(
+            path.join(self.account_dir(account), SOURCES_FILE), "w"
+        ) as sources_file:
+            sources_file.write(sources_xml)
+
     def etag_for_presets(self, account: str) -> int:
         presets_file = path.join(self.account_dir(account), PRESETS_FILE)
         return int(path.getmtime(presets_file) * 1000)
@@ -273,3 +295,50 @@ class DataStore:
             self.etag_for_sources(account),
             self.etag_for_recents(account),
         )
+
+    ######## create account
+
+    def list_accounts(self) -> list[Optional[str]]:
+        accounts = []
+        for account_id in next(walk(self.data_dir))[1]:
+            accounts.append(account_id)
+
+        return accounts
+
+    def list_devices(self, account_id) -> list[Optional[str]]:
+        devices = []
+        for device_id in next(walk(self.account_devices_dir(account_id)))[1]:
+            devices.append(device_id)
+
+        return devices
+
+    def account_exists(self, account: str) -> bool:
+        return account in self.list_accounts()
+
+    def device_exists(self, account: str, device_id: str) -> bool:
+        return device_id in self.list_devices(account)
+
+    def create_account(self, account: str) -> bool:
+        logger.info(f"creating account {account}")
+        if self.account_exists(account):
+            return False
+
+        # TODO: add error handling if you can't make the directory
+        mkdir(self.account_dir(account))
+        mkdir(self.account_devices_dir(account))
+        # create devices subdirectory
+        return True
+
+    def add_device(self, account: str, device_id: str, device_info_xml: str) -> bool:
+        if self.device_exists(account, device_id):
+            return False
+
+        # TODO: add error handling if you can't make the directory
+        mkdir(path.join(self.account_devices_dir(account), device_id))
+
+        # TODO: add error handling if you can't write the file
+        with open(
+            path.join(self.account_device_dir(account, device_id), DEVICE_INFO_FILE),
+            "w",
+        ) as device_info_file:
+            device_info_file.write(device_info_xml)
