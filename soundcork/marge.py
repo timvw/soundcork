@@ -428,7 +428,7 @@ def add_device_to_account(
     ET.SubElement(return_elem, "name").text = name
     ET.SubElement(return_elem, "updatedOn").text = created_on
 
-    return return_elem
+    return (device_id, return_elem)
 
 
 def remove_device_from_account(datastore: "DataStore", account: str, device: str):
