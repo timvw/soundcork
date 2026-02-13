@@ -89,12 +89,13 @@ When you're done with the virtual environment, you can type `deactivate` to leav
 		sudo systemctl start soundcork
 		```
     - To update the server, rebuild the project and restart. NOTE: In the current development stage of the project, we code changes may happen without a change of the version number. In these cases, or if you update your local code yourself, this build process has to be repeated, but with the last command modified to ```pip install dist/*.whl --force-reinstall```:
-     ```git pull
-        sh
-		pip install build && \
-		python -m build && \
-        pip install dist/*.whl --force-reinstall
-        sudo systemctl restart soundcork```
+     ```
+     git pull
+     pip install build && \
+     python -m build && \
+     pip install dist/*.whl --force-reinstall
+     sudo systemctl restart soundcork
+     ```
 
 You can verify the server by checking the `/docs` endpoint at your URL.
 
