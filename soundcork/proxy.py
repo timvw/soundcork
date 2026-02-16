@@ -1,7 +1,6 @@
 import json
 import logging
 import os
-import re
 from datetime import datetime, timezone
 
 import httpx
@@ -44,11 +43,6 @@ def _match_upstream(path: str) -> tuple[str, str] | None:
     return None
 
 
-def _sanitize_path(path: str) -> str:
-    """Sanitize a URL path for use in a filename."""
-    return re.sub(r"[^a-zA-Z0-9_\-]", "_", path.strip("/"))[:120]
-
-
 def _log_exchange(
     log_dir: str,
     method: str,
@@ -61,16 +55,12 @@ def _log_exchange(
     resp_headers: dict,
     resp_body: bytes,
 ) -> None:
-    """Write a JSON traffic log file."""
+    """Append a JSON-lines entry to the traffic log file."""
     os.makedirs(log_dir, exist_ok=True)
 
     now = datetime.now(timezone.utc)
-    ts = now.strftime("%Y%m%dT%H%M%S")
-    us = f"{now.microsecond:06d}"
-    sanitized = _sanitize_path(path)
-    filename = f"{ts}_{us}_{method}_{sanitized}.json"
 
-    # Best-effort decode bodies as text; fall back to base64-ish repr
+    # Best-effort decode bodies as text; fall back to repr
     try:
         req_body_str = req_body.decode("utf-8")
     except (UnicodeDecodeError, AttributeError):
@@ -98,10 +88,11 @@ def _log_exchange(
         },
     }
 
-    filepath = os.path.join(log_dir, filename)
+    filepath = os.path.join(log_dir, "traffic.jsonl")
     try:
-        with open(filepath, "w") as f:
-            json.dump(entry, f, indent=2, default=str)
+        with open(filepath, "a") as f:
+            json.dump(entry, f, default=str)
+            f.write("\n")
     except OSError:
         logger.exception("Failed to write traffic log to %s", filepath)
 
