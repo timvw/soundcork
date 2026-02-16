@@ -125,17 +125,59 @@ class ProxyMiddleware(BaseHTTPMiddleware):
 
         match = _match_upstream(request.url.path)
         if match is None:
-            # Not a known Bose prefix — let local handlers deal with it
-            return await call_next(request)
+            # Not a known Bose prefix — handle locally but still log
+            return await self._log_local(request, call_next)
 
-        upstream_base, _prefix = match
-        return await self._forward(request, upstream_base)
+        upstream_base, prefix = match
+        return await self._forward(request, upstream_base, prefix)
 
-    async def _forward(self, request: Request, upstream_base: str) -> Response:
+    async def _log_local(self, request: Request, call_next) -> Response:
+        """Pass request to local handler and log the exchange."""
         method = request.method
         path = request.url.path
         query = str(request.url.query)
-        upstream_url = f"{upstream_base}{path}"
+        req_headers = {k: v for k, v in request.headers.items()}
+        req_body = await request.body()
+
+        response = await call_next(request)
+
+        # Read the response body (StreamingResponse requires collecting chunks)
+        body_chunks = []
+        async for chunk in response.body_iterator:
+            body_chunks.append(chunk if isinstance(chunk, bytes) else chunk.encode())
+        resp_body = b"".join(body_chunks)
+
+        resp_headers = dict(response.headers)
+
+        _log_exchange(
+            log_dir=self._settings.soundcork_log_dir,
+            method=method,
+            path=path,
+            query=query,
+            req_headers=req_headers,
+            req_body=req_body,
+            upstream_url="local",
+            status=response.status_code,
+            resp_headers=resp_headers,
+            resp_body=resp_body,
+        )
+
+        # Return a new Response since we consumed the body iterator
+        return Response(
+            content=resp_body,
+            status_code=response.status_code,
+            headers=resp_headers,
+        )
+
+    async def _forward(
+        self, request: Request, upstream_base: str, prefix: str
+    ) -> Response:
+        method = request.method
+        path = request.url.path
+        # Strip the routing prefix — e.g. /bmx/v1/services → /v1/services
+        upstream_path = path[len(prefix) :] or "/"
+        query = str(request.url.query)
+        upstream_url = f"{upstream_base}{upstream_path}"
         if query:
             upstream_url = f"{upstream_url}?{query}"
 
