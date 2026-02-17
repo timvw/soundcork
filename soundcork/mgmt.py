@@ -119,8 +119,12 @@ def spotify_init_browser(request: Request):
             detail="Spotify integration not configured (missing SPOTIFY_CLIENT_ID)",
         )
 
-    # Use the server callback URL instead of the mobile deep link
-    callback_url = str(request.base_url).rstrip("/") + "/mgmt/spotify/callback"
+    # Use the server callback URL instead of the mobile deep link.
+    # We use settings.base_url rather than request.base_url because the
+    # app sits behind a TLS-terminating reverse proxy (Traefik) and
+    # request.base_url returns http:// while Spotify requires the
+    # registered https:// redirect URI.
+    callback_url = settings.base_url.rstrip("/") + "/mgmt/spotify/callback"
     authorize_url = spotify.build_authorize_url(redirect_uri=callback_url)
 
     return RedirectResponse(url=authorize_url)
@@ -155,7 +159,7 @@ async def spotify_callback(
 
     try:
         # The redirect_uri must match what was used in the authorize request
-        callback_url = str(request.base_url).rstrip("/") + "/mgmt/spotify/callback"
+        callback_url = settings.base_url.rstrip("/") + "/mgmt/spotify/callback"
         account = await spotify.exchange_code_and_store(code, redirect_uri=callback_url)
         return HTMLResponse(
             content=f"<html><body>"
