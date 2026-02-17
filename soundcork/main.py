@@ -88,8 +88,10 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+from soundcork.mgmt import router as mgmt_router
 from soundcork.proxy import ProxyMiddleware
 
+app.include_router(mgmt_router)
 app.add_middleware(ProxyMiddleware)
 
 

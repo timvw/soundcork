@@ -22,6 +22,16 @@ class Settings(BaseSettings):
     data_dir: str = ""
     soundcork_mode: str = "local"
     soundcork_log_dir: str = "./logs/traffic"
+
+    # Management API authentication
+    mgmt_username: str = "admin"
+    mgmt_password: str = "change_me!"
+
+    # Spotify OAuth
+    spotify_client_id: str = ""
+    spotify_client_secret: str = ""
+    spotify_redirect_uri: str = "ueberboese-login://spotify"
+
     model_config = SettingsConfigDict(
         # `.env.private` takes priority over `.env.shared`
         env_file=(".env.shared", ".env.private")
