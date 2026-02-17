@@ -4,97 +4,122 @@
 
 There are two completely separate ways Spotify works on a SoundTouch speaker. This is a common source of confusion.
 
-### 1. Spotify Connect (Works — Recommended)
+### 1. Spotify Connect (Always Works)
 
 - The speaker advertises itself as a Spotify Connect device on your local network
-- Open the Spotify app on your phone or computer
-- Tap the speaker/device icon and select your SoundTouch speaker (e.g., "Bose-Woonkamer")
+- Open the Spotify app on your phone or computer, tap the speaker/device icon, and select your SoundTouch speaker
 - Audio streams directly from Spotify's CDN to the speaker
-- **No Bose servers involved** — this is purely between the Spotify app, Spotify's servers, and the speaker
+- **No Bose servers involved** — purely between the Spotify app, Spotify's servers, and the speaker
 - **No soundcork involvement** — Spotify Connect operates independently
-- Works before and after the Bose shutdown
 
-### 2. SoundTouch Spotify Integration (Broken Without Workaround)
+### 2. SoundTouch Spotify Integration (Presets)
 
-- This is what the SoundTouch app used for browsing Spotify and setting Spotify presets
-- Relies on Bose's own Spotify client ID for OAuth token management via the marge server
-- The SoundTouch app can **no longer reconnect or configure** Spotify accounts
-- Spotify presets may show as "unplayable" after redirecting to soundcork
+- This is what the SoundTouch app used for setting Spotify presets (buttons 1-6)
+- Originally relied on Bose's OAuth token management via the marge server
+- After the Bose shutdown, this path is broken **unless soundcork handles the token refresh**
 
-## Fixing Spotify Presets
+## Automatic Spotify Support
 
-If your Spotify preset fails after setting up soundcork, you'll see these symptoms in the traffic logs:
+Soundcork can keep Spotify presets working automatically. There are two mechanisms, and both can run together:
 
-- `type: "DO_NOT_RESUME"`, `location: "Unplayable location string"`, `playStatus: "STOP_STATE"`
-- `source: "INVALID_SOURCE"`, `playStatus: "BUFFERING_STATE"`
+### OAuth Token Intercept (Primary)
 
-### The Fix: Kick-Start via Spotify Connect
+The speaker firmware has built-in token refresh logic. It periodically calls an OAuth endpoint to get a fresh Spotify access token. Soundcork intercepts these requests and returns a valid token.
 
-1. Open the **Spotify app** on your phone (not the SoundTouch app)
-2. Play any song
-3. Tap the speaker/device icon at the bottom of the Now Playing screen
-4. Select your SoundTouch speaker
-5. Wait for the music to start playing (confirms Spotify Connect is active)
-6. Now press your Spotify preset button on the speaker — **it should work**
+**How it works:**
+1. Speaker sends `POST /oauth/device/{deviceId}/music/musicprovider/15/token/cs3`
+2. Soundcork refreshes the token using the stored Spotify account credentials
+3. Returns a fresh access token as JSON
+4. The speaker uses this token for Spotify playback
 
-### Why This Works
+This is transparent — the speaker manages its own refresh cycle, just like it did with the real Bose servers.
 
-When you cast via Spotify Connect, the Spotify app authenticates the speaker's **embedded Spotify client** directly over the local network using ZeroConf/mDNS. This gives the speaker a fresh Spotify session.
+**No extra configuration needed** beyond the initial Spotify account setup (see below). The speaker already sends these requests to the same server as marge.
 
-Key details:
+### ZeroConf Primer (Optional Fallback)
 
-- The Spotify session lives in the speaker's **RAM** — the OAuth token stored in `Sources.xml` doesn't change
-- The preset can reuse the active Spotify session established by Spotify Connect
-- **You may need to repeat this after a speaker reboot**, since the in-memory session is lost on restart
-- Spotify playback traffic never appears in soundcork's traffic logs because it doesn't go through soundcork
+As a belt-and-suspenders approach, soundcork can also proactively push Spotify tokens to the speaker via the ZeroConf endpoint (port 8200). This uses the same mechanism the Spotify desktop app uses.
 
-### What We Observed (Traffic Analysis)
+**When it runs:**
+- On speaker boot (`power_on` event), with retry/backoff
+- Periodically every 45 minutes (tokens expire after 1 hour)
+- When a new speaker is first seen
 
-From our real traffic logs:
+This is useful as a fallback for edge cases where the OAuth intercept might not trigger quickly enough (e.g., immediately after a cold boot).
 
-**Before Spotify Connect** (speaker trying to play preset on its own):
+## Setup
 
-```
-source-state: "SPOTIFY"
-contentItem type: "DO_NOT_RESUME"
-location: "Unplayable location string"
-playStatus: "STOP_STATE"
-```
+### Step 1: Register a Spotify App
 
-**After casting one song via Spotify Connect** (from the Spotify app):
+1. Go to the [Spotify Developer Dashboard](https://developer.spotify.com/dashboard)
+2. Create a new app
+   - **Redirect URI**: `{your-soundcork-url}/mgmt/spotify/callback` (e.g., `https://soundcork.local:8000/mgmt/spotify/callback`)
+   - **APIs used**: Web API
+3. Note the **Client ID** and **Client Secret**
 
-```
-track: "Beachball - Vocal Radio Edit"
-artist: "Nalin & Kane"
-source: "SPOTIFY"
-playStatus: "PLAY_STATE"
+### Step 2: Configure Soundcork
+
+Set the environment variables:
+
+```bash
+SPOTIFY_CLIENT_ID=your-client-id
+SPOTIFY_CLIENT_SECRET=your-client-secret
 ```
 
-**Then pressing Spotify preset** (Clouseau):
+### Step 3: Link Your Spotify Account
 
+Using the management API:
+
+```bash
+# Start the OAuth flow
+curl -u admin:password https://your-soundcork/mgmt/spotify/auth/init
+
+# Open the returned URL in your browser, authorize, then complete:
+curl -u admin:password "https://your-soundcork/mgmt/spotify/auth/callback?code=AUTH_CODE"
+
+# Verify the account is linked
+curl -u admin:password https://your-soundcork/mgmt/spotify/accounts
 ```
-artist: "Clouseau"
-album: "Hoezo?"
-source: "SPOTIFY"
-playStatus: "PLAY_STATE"  ← works!
-```
+
+Or use the [companion app](https://github.com/timvw/ueberboese-app) which handles this flow automatically.
+
+### Step 4: Verify
+
+After linking your Spotify account:
+- The OAuth intercept works immediately — the speaker will get fresh tokens on its next refresh cycle
+- The ZeroConf primer (if enabled) will prime the speaker within a few minutes
+- Press a Spotify preset button on the speaker — it should play
+
+## Technical Details
+
+### Token Lifecycle
+
+- Spotify access tokens expire after **1 hour** (3600 seconds)
+- The speaker's firmware requests a new token via the OAuth endpoint before expiry
+- The ZeroConf primer re-primes every **45 minutes** as an additional safety net
+- Soundcork caches tokens to avoid unnecessary Spotify API calls
+
+### What `cs3` / `token_version_3` Means
+
+The speaker requests tokens with `tokenType=cs3` in the URL. This corresponds to `token_version_3` in the XML credential format — it's Bose's internal versioning for their OAuth credential schema. The actual value is a standard Spotify access token.
+
+### Speaker ZeroConf Endpoint
+
+Each speaker exposes a ZeroConf endpoint on port 8200:
+- `GET /zc?action=getInfo` — returns speaker info including `activeUser`, `libraryVersion`
+- `POST /zc` with `action=addUser` — sets the active Spotify user
+
+### Alternative Approach: Manual Kick-Start
+
+If you don't want to configure Spotify credentials in soundcork, you can manually prime the speaker by casting one song via the Spotify app (Spotify Connect). This gives the speaker a temporary in-memory session that enables presets. However, you'll need to repeat this after every speaker reboot.
 
 ## Managing Presets
 
-The official SoundTouch app can no longer configure presets pointing to TuneIn stations. If you need to add or change presets, use the [Bose CLI](https://github.com/timvw/bose), which talks directly to the speaker's local API on port 8090:
+The official SoundTouch app can no longer configure presets pointing to TuneIn stations. Use the [Bose CLI](https://github.com/timvw/bose) to manage presets directly via the speaker's local API (port 8090):
 
 ```bash
-# Install via Homebrew
 brew install timvw/tap/bose
-
-# View current presets
-bose preset
-
-# Get a specific preset
-bose preset 1
-
-# View speaker status
-bose status
+bose preset       # view presets
+bose preset 1     # get a specific preset
+bose status       # speaker status
 ```
-
-The speaker's local API (port 8090) is completely independent of the cloud servers and will continue to work indefinitely.
