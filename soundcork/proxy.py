@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import time
 from datetime import datetime, timezone
 
 import httpx
@@ -34,6 +35,78 @@ HOP_BY_HOP = frozenset(
     }
 )
 
+# How long (seconds) to wait before retrying an upstream after failure
+CIRCUIT_BREAKER_COOLDOWN = 300  # 5 minutes
+
+# Upstream request timeout (seconds) — fail fast to avoid blocking the speaker
+UPSTREAM_TIMEOUT = 10.0
+
+
+class CircuitBreaker:
+    """Simple circuit breaker for upstream servers.
+
+    States:
+      CLOSED  — upstream healthy, forward requests normally
+      OPEN    — upstream failed recently, skip directly to local fallback
+      HALF-OPEN — cooldown expired, try one request to probe upstream health
+    """
+
+    def __init__(self, cooldown: float = CIRCUIT_BREAKER_COOLDOWN):
+        self._cooldown = cooldown
+        # upstream_host -> {"open": bool, "last_failure": float, "failures": int}
+        self._circuits: dict[str, dict] = {}
+
+    def is_open(self, upstream_base: str) -> bool:
+        """Return True if the circuit is open (upstream assumed down)."""
+        state = self._circuits.get(upstream_base)
+        if state is None or not state["open"]:
+            return False
+        # Check if cooldown has expired (half-open: allow a probe)
+        if time.monotonic() - state["last_failure"] > self._cooldown:
+            return False
+        return True
+
+    def record_failure(self, upstream_base: str) -> None:
+        """Mark an upstream as failed."""
+        state = self._circuits.get(upstream_base)
+        if state is None:
+            self._circuits[upstream_base] = {
+                "open": True,
+                "last_failure": time.monotonic(),
+                "failures": 1,
+            }
+        else:
+            state["open"] = True
+            state["last_failure"] = time.monotonic()
+            state["failures"] += 1
+        logger.warning(
+            "CIRCUIT OPEN: %s marked as down (total failures: %d)",
+            upstream_base,
+            self._circuits[upstream_base]["failures"],
+        )
+
+    def record_success(self, upstream_base: str) -> None:
+        """Mark an upstream as healthy (close the circuit)."""
+        state = self._circuits.get(upstream_base)
+        if state is not None and state["open"]:
+            logger.info("CIRCUIT CLOSED: %s is back up", upstream_base)
+            state["open"] = False
+            state["failures"] = 0
+
+    def get_status(self, upstream_base: str) -> str:
+        """Return human-readable status for logging."""
+        state = self._circuits.get(upstream_base)
+        if state is None or not state["open"]:
+            return "healthy"
+        elapsed = time.monotonic() - state["last_failure"]
+        if elapsed > self._cooldown:
+            return "half-open (probing)"
+        return f"down (failures={state['failures']}, retry in {self._cooldown - elapsed:.0f}s)"
+
+
+# Singleton circuit breaker shared across requests
+_circuit_breaker = CircuitBreaker()
+
 
 def _match_upstream(path: str) -> tuple[str, str] | None:
     """Return (upstream_base, prefix) if path matches a known Bose prefix."""
@@ -54,8 +127,16 @@ def _log_exchange(
     status: int,
     resp_headers: dict,
     resp_body: bytes,
+    fallback: str | None = None,
 ) -> None:
-    """Append a JSON-lines entry to the traffic log file."""
+    """Append a JSON-lines entry to the traffic log file.
+
+    Args:
+        fallback: None if no fallback occurred, otherwise a reason string:
+            "circuit_open" — upstream circuit was open, skipped to local
+            "upstream_error" — upstream request failed, fell back to local
+            "upstream_http_error" — upstream returned 5xx, fell back to local
+    """
     os.makedirs(log_dir, exist_ok=True)
 
     now = datetime.now(timezone.utc)
@@ -88,6 +169,9 @@ def _log_exchange(
         },
     }
 
+    if fallback:
+        entry["fallback"] = fallback
+
     filepath = os.path.join(log_dir, "traffic.jsonl")
     try:
         with open(filepath, "a") as f:
@@ -98,12 +182,13 @@ def _log_exchange(
 
 
 class ProxyMiddleware(BaseHTTPMiddleware):
-    """Transparent proxy to real Bose servers.
+    """Smart proxy to Bose servers with circuit breaker fallback.
 
     When SOUNDCORK_MODE=proxy, requests matching known Bose path prefixes
-    are forwarded to the real upstream servers and the full exchange is
-    logged.  When SOUNDCORK_MODE=local (the default), all requests pass
-    through to soundcork's local handlers.
+    are forwarded to the real upstream servers. If an upstream is unreachable
+    or returns a server error, the request falls back to soundcork's local
+    handlers automatically. A circuit breaker tracks upstream health to avoid
+    repeated timeouts once a server is confirmed down.
     """
 
     def __init__(self, app):
@@ -120,9 +205,17 @@ class ProxyMiddleware(BaseHTTPMiddleware):
             return await self._log_local(request, call_next)
 
         upstream_base, prefix = match
-        return await self._forward(request, upstream_base, prefix)
+        return await self._forward_with_fallback(
+            request, call_next, upstream_base, prefix
+        )
 
-    async def _log_local(self, request: Request, call_next) -> Response:
+    async def _log_local(
+        self,
+        request: Request,
+        call_next,
+        fallback: str | None = None,
+        upstream_url: str = "local",
+    ) -> Response:
         """Pass request to local handler and log the exchange."""
         method = request.method
         path = request.url.path
@@ -140,6 +233,15 @@ class ProxyMiddleware(BaseHTTPMiddleware):
 
         resp_headers = dict(response.headers)
 
+        if fallback:
+            logger.warning(
+                "FALLBACK [%s]: %s %s -> local (was: %s)",
+                fallback,
+                method,
+                path,
+                upstream_url,
+            )
+
         _log_exchange(
             log_dir=self._settings.soundcork_log_dir,
             method=method,
@@ -147,10 +249,11 @@ class ProxyMiddleware(BaseHTTPMiddleware):
             query=query,
             req_headers=req_headers,
             req_body=req_body,
-            upstream_url="local",
+            upstream_url=upstream_url,
             status=response.status_code,
             resp_headers=resp_headers,
             resp_body=resp_body,
+            fallback=fallback,
         )
 
         # Return a new Response since we consumed the body iterator
@@ -160,27 +263,45 @@ class ProxyMiddleware(BaseHTTPMiddleware):
             headers=resp_headers,
         )
 
-    async def _forward(
-        self, request: Request, upstream_base: str, prefix: str
+    async def _forward_with_fallback(
+        self,
+        request: Request,
+        call_next,
+        upstream_base: str,
+        prefix: str,
     ) -> Response:
-        method = request.method
+        """Try upstream; on failure, fall back to local handler."""
         path = request.url.path
-        # Strip the routing prefix — e.g. /bmx/v1/services → /v1/services
         upstream_path = path[len(prefix) :] or "/"
-        query = str(request.url.query)
         upstream_url = f"{upstream_base}{upstream_path}"
+        query = str(request.url.query)
         if query:
             upstream_url = f"{upstream_url}?{query}"
 
-        # Build forwarding headers (strip hop-by-hop)
+        # Circuit breaker: if upstream is known-down, skip directly to local
+        if _circuit_breaker.is_open(upstream_base):
+            logger.info(
+                "CIRCUIT OPEN: skipping %s for %s %s -> falling back to local",
+                upstream_base,
+                request.method,
+                path,
+            )
+            return await self._log_local(
+                request,
+                call_next,
+                fallback="circuit_open",
+                upstream_url=upstream_url,
+            )
+
+        # Try the upstream
+        method = request.method
         fwd_headers = {
             k: v for k, v in request.headers.items() if k.lower() not in HOP_BY_HOP
         }
-
         req_body = await request.body()
 
         try:
-            async with httpx.AsyncClient() as client:
+            async with httpx.AsyncClient(timeout=UPSTREAM_TIMEOUT) as client:
                 upstream_resp = await client.request(
                     method=method,
                     url=upstream_url,
@@ -188,8 +309,16 @@ class ProxyMiddleware(BaseHTTPMiddleware):
                     content=req_body,
                     follow_redirects=True,
                 )
-        except httpx.RequestError:
-            logger.exception("Upstream request failed for %s %s", method, upstream_url)
+        except httpx.RequestError as exc:
+            # Upstream unreachable — open circuit and fall back
+            _circuit_breaker.record_failure(upstream_base)
+            logger.warning(
+                "UPSTREAM FAILED: %s %s -> %s (%s) — falling back to local",
+                method,
+                path,
+                upstream_url,
+                type(exc).__name__,
+            )
             _log_exchange(
                 log_dir=self._settings.soundcork_log_dir,
                 method=method,
@@ -200,14 +329,23 @@ class ProxyMiddleware(BaseHTTPMiddleware):
                 upstream_url=upstream_url,
                 status=502,
                 resp_headers={},
-                resp_body=b"Bad Gateway",
+                resp_body=str(exc).encode(),
+                fallback="upstream_error",
             )
-            return Response(content="Bad Gateway", status_code=502)
+            return await self._log_local(
+                request,
+                call_next,
+                fallback="upstream_error",
+                upstream_url=upstream_url,
+            )
+
+        # Upstream responded — record success (closes circuit if it was open)
+        _circuit_breaker.record_success(upstream_base)
 
         resp_body = upstream_resp.content
         resp_headers = dict(upstream_resp.headers)
 
-        # Log the full exchange
+        # Log the upstream exchange
         _log_exchange(
             log_dir=self._settings.soundcork_log_dir,
             method=method,
