@@ -54,13 +54,21 @@ logger = logging.getLogger(__name__)
 datastore = DataStore()
 settings = Settings()
 
+from soundcork.spotify_service import SpotifyService
+from soundcork.zeroconf_primer import ZeroConfPrimer
+
+spotify_service = SpotifyService()
+zeroconf_primer = ZeroConfPrimer(spotify_service, datastore, settings)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("Starting up soundcork")
     # datastore.discover_devices()
+    zeroconf_primer.start_periodic()
     logger.info("done starting up server")
     yield
+    zeroconf_primer.stop_periodic()
     logger.debug("closing server")
 
 
@@ -117,6 +125,21 @@ def power_on():
     # see https://github.com/fastapi/fastapi/discussions/8091 for the TODO here
     # I wonder if the endpoint will work if I return HTTPStatus.IM_A_TEAPOT
     # instead? I'd like to try it.
+
+    # Prime speakers for Spotify after boot.  Run in a background thread
+    # so the power_on response is not delayed (the speaker expects a fast
+    # reply).  We add a short delay to give the speaker time to finish
+    # its boot sequence and bring up the ZeroConf port (8200).
+    import threading
+
+    def _delayed_prime():
+        import time
+
+        time.sleep(10)
+        logger.info("Speaker booted — priming Spotify via ZeroConf...")
+        zeroconf_primer.prime_all_speakers()
+
+    threading.Thread(target=_delayed_prime, daemon=True).start()
 
     return
 
