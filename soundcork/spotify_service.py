@@ -184,6 +184,69 @@ class SpotifyService:
 
         return account["accessToken"]
 
+    def get_fresh_token_sync(self) -> str | None:
+        """Get a valid Spotify access token synchronously.
+
+        Used by the marge endpoints (which are sync) to inject fresh
+        tokens into the /full account response for the speaker.
+
+        Returns None if no Spotify account is linked or refresh fails.
+        """
+        accounts = self._load_accounts()
+        if not accounts:
+            return None
+
+        if not self._settings.spotify_client_id:
+            return None
+
+        account = accounts[0]
+        now = int(time.time())
+
+        # Refresh if token is expired or about to expire (60s buffer)
+        if now >= account.get("tokenExpiresAt", 0) - 60:
+            refresh_token = account.get("refreshToken", "")
+            if not refresh_token:
+                logger.warning("No Spotify refresh token available")
+                return None
+
+            try:
+                response = httpx.post(
+                    SPOTIFY_TOKEN_URL,
+                    data={
+                        "grant_type": "refresh_token",
+                        "refresh_token": refresh_token,
+                    },
+                    auth=(
+                        self._settings.spotify_client_id,
+                        self._settings.spotify_client_secret,
+                    ),
+                    headers={"Content-Type": "application/x-www-form-urlencoded"},
+                )
+
+                if response.status_code != 200:
+                    logger.error("Spotify token refresh failed: %s", response.text)
+                    return None
+
+                token_data = response.json()
+                account["accessToken"] = token_data["access_token"]
+                account["tokenExpiresAt"] = now + token_data.get("expires_in", 3600)
+                if "refresh_token" in token_data:
+                    account["refreshToken"] = token_data["refresh_token"]
+                self._save_accounts(accounts)
+                logger.info("Spotify token refreshed for speaker injection")
+            except Exception:
+                logger.exception("Failed to refresh Spotify token")
+                return None
+
+        return account["accessToken"]
+
+    def get_spotify_user_id(self) -> str | None:
+        """Get the Spotify user ID of the first linked account."""
+        accounts = self._load_accounts()
+        if not accounts:
+            return None
+        return accounts[0].get("spotifyUserId")
+
     async def _get_user_profile(self, access_token: str) -> dict:
         """Fetch the current user's Spotify profile."""
         async with httpx.AsyncClient() as client:

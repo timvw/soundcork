@@ -168,11 +168,34 @@ def content_item_source_xml(
 
 def all_sources_xml(
     configured_sources: list[ConfiguredSource],
+    spotify_token: str | None = None,
+    spotify_user_id: str | None = None,
 ) -> ET.Element:
 
     sources_elem = ET.Element("sources")
 
     for conf_source in configured_sources:
+        # Inject fresh Spotify token if available and source matches
+        if (
+            spotify_token
+            and conf_source.source_key_type == "SPOTIFY"
+            and (
+                spotify_user_id is None
+                or conf_source.source_key_account == spotify_user_id
+            )
+        ):
+            logger.info(
+                "Injecting fresh Spotify token for account %s",
+                conf_source.source_key_account,
+            )
+            conf_source = ConfiguredSource(
+                display_name=conf_source.display_name,
+                id=conf_source.id,
+                secret=spotify_token,
+                secret_type=conf_source.secret_type,
+                source_key_type=conf_source.source_key_type,
+                source_key_account=conf_source.source_key_account,
+            )
         sources_elem.append(configured_source_xml(conf_source))
 
     return sources_elem
@@ -353,24 +376,24 @@ def account_full_xml(account: str, datastore: "DataStore") -> ET.Element:
         attached_product_elem.attrib["product_code"] = device_info.product_code
         # some devices seem to have components but i don't know they're important
         ET.SubElement(attached_product_elem, "components")
-        ET.SubElement(attached_product_elem, "productlabel").text = (
-            device_info.product_code
-        )
-        ET.SubElement(attached_product_elem, "serialnumber").text = (
-            device_info.product_serial_number
-        )
+        ET.SubElement(
+            attached_product_elem, "productlabel"
+        ).text = device_info.product_code
+        ET.SubElement(
+            attached_product_elem, "serialnumber"
+        ).text = device_info.product_serial_number
         ET.SubElement(device_elem, "createdOn").text = default_datestr
 
-        ET.SubElement(device_elem, "firmwareVersion").text = (
-            device_info.firmware_version
-        )
+        ET.SubElement(
+            device_elem, "firmwareVersion"
+        ).text = device_info.firmware_version
         ET.SubElement(device_elem, "ipaddress").text = device_info.ip_address
         ET.SubElement(device_elem, "name").text = device_info.name
         device_elem.append(presets_xml(datastore, account, device_id))
         device_elem.append(recents_xml(datastore, account, device_id))
-        ET.SubElement(device_elem, "serialnumber").text = (
-            device_info.device_serial_number
-        )
+        ET.SubElement(
+            device_elem, "serialnumber"
+        ).text = device_info.device_serial_number
         ET.SubElement(device_elem, "updatedOn").text = default_datestr
 
     ET.SubElement(account_elem, "mode").text = "global"
@@ -379,8 +402,27 @@ def account_full_xml(account: str, datastore: "DataStore") -> ET.Element:
     # number rather than a language code
     ET.SubElement(account_elem, "preferredLanguage").text = "en"
     account_elem.append(provider_settings_xml(account))
+
+    # Try to inject a fresh Spotify token into the sources response
+    spotify_token = None
+    spotify_user_id = None
+    try:
+        from soundcork.spotify_service import SpotifyService
+
+        spotify_svc = SpotifyService()
+        spotify_token = spotify_svc.get_fresh_token_sync()
+        spotify_user_id = spotify_svc.get_spotify_user_id()
+        if spotify_token:
+            logger.info("Fresh Spotify token available for speaker injection")
+    except Exception:
+        logger.debug("Spotify token injection not available", exc_info=True)
+
     account_elem.append(
-        all_sources_xml(datastore.get_configured_sources(account, last_device_id))
+        all_sources_xml(
+            datastore.get_configured_sources(account, last_device_id),
+            spotify_token=spotify_token,
+            spotify_user_id=spotify_user_id,
+        )
     )
 
     return account_elem
