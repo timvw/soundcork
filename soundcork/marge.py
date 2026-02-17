@@ -175,11 +175,7 @@ def content_item_source_xml(
 def all_sources_xml(
     configured_sources: list[ConfiguredSource],
 ) -> ET.Element:
-    """Build the <sources> XML element from a list of configured sources.
-
-    NOTE: Spotify token injection now happens in _inject_spotify_token()
-    before this function is called.
-    """
+    """Build the <sources> XML element from a list of configured sources."""
     sources_elem = ET.Element("sources")
     for conf_source in configured_sources:
         sources_elem.append(configured_source_xml(conf_source))
@@ -356,14 +352,26 @@ def _inject_spotify_token(
     spotify_token: str,
     spotify_user_id: str | None = None,
 ) -> list[ConfiguredSource]:
-    """Return a copy of configured_sources with the Spotify credential replaced."""
+    """Return a copy of configured_sources with the Spotify credential replaced.
+
+    WARNING: This function is currently UNUSED and should NOT be called
+    from account_full_xml().  The speaker firmware has Bose's Spotify
+    client ID/secret embedded and uses the original refresh token from
+    Sources.xml (secretType="token_version_3") to obtain streaming
+    tokens directly from Spotify.  Injecting a Web API access token
+    from our own Spotify OAuth app breaks playback because the token
+    is bound to a different client ID.
+
+    Kept for potential future use (e.g. if we ever obtain a token via
+    Bose's client credentials or ZeroConf).
+    """
     result = []
     for cs in configured_sources:
         if cs.source_key_type == "SPOTIFY" and (
             spotify_user_id is None or cs.source_key_account == spotify_user_id
         ):
             logger.info(
-                "Injecting fresh Spotify token for account %s",
+                "Injecting Spotify token for account %s",
                 cs.source_key_account,
             )
             cs = ConfiguredSource(
@@ -383,25 +391,13 @@ def account_full_xml(account: str, datastore: "DataStore") -> ET.Element:
     account_elem.attrib["id"] = account
     ET.SubElement(account_elem, "accountStatus").text = "OK"
 
-    # Try to get a fresh Spotify token up front so we can inject it
-    # into sources, presets, AND recents (the speaker reads the token
-    # from whichever section it uses for playback).
-    spotify_token = None
-    spotify_user_id = None
-    try:
-        from soundcork.spotify_service import SpotifyService
-
-        spotify_svc = SpotifyService()
-        spotify_token = spotify_svc.get_fresh_token_sync()
-        spotify_user_id = spotify_svc.get_spotify_user_id()
-        if spotify_token:
-            logger.info("Fresh Spotify token available for speaker injection")
-        else:
-            logger.warning(
-                "No fresh Spotify token returned (no linked account or credentials?)"
-            )
-    except Exception as e:
-        logger.warning("Spotify token injection failed: %s", e, exc_info=True)
+    # NOTE: We intentionally do NOT inject Spotify Web API tokens here.
+    # The speaker firmware has Bose's Spotify client credentials embedded
+    # and knows how to use the original refresh token from Sources.xml
+    # (secretType="token_version_3", starts with "AQC...") to obtain
+    # streaming tokens directly from Spotify.  Injecting our Web API
+    # access token (which starts with "BQ...") breaks playback because
+    # the speaker's embedded Spotify SDK cannot use it.
 
     devices_elem = ET.SubElement(account_elem, "devices")
     last_device_id = ""
@@ -411,13 +407,7 @@ def account_full_xml(account: str, datastore: "DataStore") -> ET.Element:
         last_device_id = device_id
         device_info = datastore.get_device_info(account, device_id)
 
-        # Build the configured sources list once per device, with
-        # the fresh Spotify token injected if available.
         conf_sources = datastore.get_configured_sources(account, device_id)
-        if spotify_token:
-            conf_sources = _inject_spotify_token(
-                conf_sources, spotify_token, spotify_user_id
-            )
 
         device_elem = ET.SubElement(devices_elem, "device")
         device_elem.attrib["deviceid"] = device_id
@@ -452,14 +442,9 @@ def account_full_xml(account: str, datastore: "DataStore") -> ET.Element:
     ET.SubElement(account_elem, "preferredLanguage").text = "en"
     account_elem.append(provider_settings_xml(account))
 
-    # For the global sources section, reuse the last device's
-    # (already-injected) configured sources list.
+    # Global sources section
     if last_device_id:
         conf_sources = datastore.get_configured_sources(account, last_device_id)
-        if spotify_token:
-            conf_sources = _inject_spotify_token(
-                conf_sources, spotify_token, spotify_user_id
-            )
     else:
         conf_sources = []
 
