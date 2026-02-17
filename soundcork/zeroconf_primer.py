@@ -41,6 +41,7 @@ logger = logging.getLogger(__name__)
 ZEROCONF_PORT = 8200
 PERIODIC_CHECK_SECONDS = 45 * 60  # 45 minutes
 BOOT_RETRY_DELAYS = [5, 10, 20]  # seconds between retries after power_on
+MAX_CONSECUTIVE_FAILURES = 5  # remove speaker from registry after this many
 
 
 @dataclass
@@ -334,6 +335,24 @@ class ZeroConfPrimer:
 
             for speaker in speakers:
                 self._prime_if_needed(speaker)
+
+            # Remove speakers that have failed too many times in a row.
+            # They get re-added automatically when they contact marge
+            # or send a power_on event.
+            with self._lock:
+                to_remove = [
+                    did
+                    for did, s in self._speakers.items()
+                    if s.prime_failures >= MAX_CONSECUTIVE_FAILURES
+                ]
+                for did in to_remove:
+                    s = self._speakers.pop(did)
+                    logger.warning(
+                        "Removed unreachable speaker %s (%s) after %d consecutive failures",
+                        did,
+                        s.ip_address,
+                        s.prime_failures,
+                    )
 
         except Exception:
             logger.exception("Error during periodic Spotify primer")
