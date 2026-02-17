@@ -121,6 +121,66 @@ def power_on():
     return
 
 
+@app.get(
+    "/marge/streaming/device/{device}/streaming_token",
+    response_class=BoseXMLResponse,
+    tags=["marge"],
+)
+def streaming_token(device: str, request: Request):
+    """Provide a streaming token for the speaker.
+
+    The speaker calls this at boot to get a token it can use for
+    Spotify playback. The original Bose server validated the speaker's
+    Bearer credential and returned a streaming token in the Authorization
+    response header (empty body).
+
+    We return a fresh Spotify OAuth access token obtained via the
+    management API's OAuth flow.
+    """
+    from soundcork.spotify_service import SpotifyService
+
+    # Log incoming request headers for debugging
+    req_headers = dict(request.headers)
+    logger.info(
+        "streaming_token request for device %s, headers: %s",
+        device,
+        {k: (v[:30] + "..." if len(v) > 30 else v) for k, v in req_headers.items()},
+    )
+
+    try:
+        spotify_svc = SpotifyService()
+        token = spotify_svc.get_fresh_token_sync()
+        if token:
+            logger.info(
+                "Returning fresh Spotify streaming token for device %s (token starts with: %s..., length: %d)",
+                device,
+                token[:20],
+                len(token),
+            )
+            resp = Response(
+                content="",
+                media_type="application/vnd.bose.streaming-v1.2+xml",
+                headers={"Authorization": token},
+            )
+            logger.info(
+                "streaming_token response headers: %s",
+                dict(resp.headers),
+            )
+            return resp
+        else:
+            logger.warning(
+                "No Spotify token available for streaming_token request (device %s)",
+                device,
+            )
+            return Response(content="", status_code=404)
+    except Exception as e:
+        logger.warning("streaming_token failed for device %s: %s", device, e)
+        return Response(content="", status_code=404)
+    except Exception as e:
+        logger.warning("streaming_token failed for device %s: %s", device, e)
+        return Response(content="", status_code=404)
+
+
 @app.get("/marge/streaming/sourceproviders", tags=["marge"])
 def streamingsourceproviders():
     return_xml = (
