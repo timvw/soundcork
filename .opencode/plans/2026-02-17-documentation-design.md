@@ -4,7 +4,7 @@ Date: 2026-02-17
 
 ## Goal
 
-Document all work done on soundcork so other Bose SoundTouch owners can keep their speakers alive after the February 2026 server shutdown. Three outputs targeting progressive depth: blog post (discovery), README (quick start), detailed docs (deep dive).
+Document all work done on soundcork so other Bose SoundTouch owners can keep their speakers alive after the Bose SoundTouch cloud shutdown on May 6, 2026 (extended from the original February 18 date). Three outputs targeting progressive depth: blog post (discovery), README (quick start), detailed docs (deep dive).
 
 ## Audience
 
@@ -54,11 +54,13 @@ Structure:
 - Verification steps
 
 #### docs/architecture.md
-- The problem: 4 cloud servers, Bose shut them down
-- The four Bose servers: table with name, internal name, purpose, status (Feb 2026)
-  - streaming.bose.com (marge): ALIVE
-  - content.api.bose.io (bmx): API REMOVED (404s)
-  - worldwide.bose.com (updates): API REMOVED (404s)
+- The problem: 4 cloud servers, Bose is shutting them down on May 6, 2026 (extended from Feb 18)
+- Reference: https://www.bose.co.uk/en_gb/landing_pages/soundtouch-eol.html
+- Note: Bose published official API docs for community developers: https://assets.bosecreative.com/m/496577402d128874/original/SoundTouch-Web-API.pdf
+- The four Bose servers: table with name, internal name, purpose, status (as of Feb 2026)
+  - streaming.bose.com (marge): ALIVE (servers not shut down until May 6)
+  - content.api.bose.io (bmx): API REMOVED (server responds but 404s all endpoints — early deprecation before full shutdown)
+  - worldwide.bose.com (updates): API REMOVED (same — 404s)
   - events.api.bosecm.com (stats): telemetry only, safe to ignore
 - How SoundCork replaces them: speaker config → soundcork → local handlers
 - Local mode vs proxy mode
@@ -104,7 +106,7 @@ File: `content/posts/2026/02/17/keep-your-bose-soundtouch-alive.md`
 Hugo frontmatter: title, date, draft: false, tags: [bose, soundtouch, self-hosting, reverse-engineering, docker], categories: [self-hosting]
 
 Structure (~120 lines, tutorial format):
-- Opening: Bose shut down servers, your presets stopped working, here's the fix
+- Opening: Bose is shutting down SoundTouch servers on May 6, 2026 — here's how to keep your speaker fully functional
 - What stopped working vs what still works without changes
 - The fix: SoundCork (brief intro, credit deborahgu, fork link)
 - Step by step: SSH access → extract data → deploy (Docker) → redirect speaker → verify
@@ -119,7 +121,7 @@ Structure (~120 lines, tutorial format):
 2. "Add example data files (Presets, Sources, Recents, DeviceInfo)"
 3. "Document SSH access on firmware 27.x (USB stick method)"
 4. "Document Spotify behavior: Connect vs SoundTouch integration"
-5. "Document Bose server status post-shutdown (Feb 2026)"
+5. "Document Bose server status (pre-shutdown, some APIs already returning 404)"
 6. "Add Kubernetes deployment example"
 
 #### Existing issues to reference
@@ -140,3 +142,5 @@ Structure (~120 lines, tutorial format):
 - **Honest documentation of unknowns**: USB+Ethernet change documented as two simultaneous changes. Spotify token behavior documented with traffic evidence.
 - **Example files with real TuneIn stations**: Station IDs are public (s102123 = Joe, s69243 = QMusic, etc.). Only credentials/account IDs redacted.
 - **Blog post is tutorial, not story**: Practical focus — readers want to fix their speaker, not read about our journey. Links to repo for depth.
+- **Correct shutdown date**: May 6, 2026 (extended from Feb 18). Servers partly alive but BMX already returning 404s. Bose published official API docs for community developers.
+- **Reference Bose's official API docs**: Bose explicitly supports community tools — link to their published SoundTouch-Web-API.pdf.
