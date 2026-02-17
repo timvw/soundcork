@@ -68,8 +68,14 @@ def preset_xml(preset: Preset, conf_sources_list: list[ConfiguredSource]) -> ET.
     return preset_element
 
 
-def presets_xml(datastore: "DataStore", account: str, device: str) -> ET.Element:
-    conf_sources_list = datastore.get_configured_sources(account, device)
+def presets_xml(
+    datastore: "DataStore",
+    account: str,
+    device: str,
+    conf_sources_list: list[ConfiguredSource] | None = None,
+) -> ET.Element:
+    if conf_sources_list is None:
+        conf_sources_list = datastore.get_configured_sources(account, device)
 
     presets_list = datastore.get_presets(account, device)
 
@@ -168,36 +174,15 @@ def content_item_source_xml(
 
 def all_sources_xml(
     configured_sources: list[ConfiguredSource],
-    spotify_token: str | None = None,
-    spotify_user_id: str | None = None,
 ) -> ET.Element:
+    """Build the <sources> XML element from a list of configured sources.
 
+    NOTE: Spotify token injection now happens in _inject_spotify_token()
+    before this function is called.
+    """
     sources_elem = ET.Element("sources")
-
     for conf_source in configured_sources:
-        # Inject fresh Spotify token if available and source matches
-        if (
-            spotify_token
-            and conf_source.source_key_type == "SPOTIFY"
-            and (
-                spotify_user_id is None
-                or conf_source.source_key_account == spotify_user_id
-            )
-        ):
-            logger.info(
-                "Injecting fresh Spotify token for account %s",
-                conf_source.source_key_account,
-            )
-            conf_source = ConfiguredSource(
-                display_name=conf_source.display_name,
-                id=conf_source.id,
-                secret=spotify_token,
-                secret_type=conf_source.secret_type,
-                source_key_type=conf_source.source_key_type,
-                source_key_account=conf_source.source_key_account,
-            )
         sources_elem.append(configured_source_xml(conf_source))
-
     return sources_elem
 
 
@@ -221,8 +206,14 @@ def configured_source_xml(conf_source: ConfiguredSource) -> ET.Element:
     return source
 
 
-def recents_xml(datastore: "DataStore", account: str, device: str) -> ET.Element:
-    conf_sources_list = datastore.get_configured_sources(account, device)
+def recents_xml(
+    datastore: "DataStore",
+    account: str,
+    device: str,
+    conf_sources_list: list[ConfiguredSource] | None = None,
+) -> ET.Element:
+    if conf_sources_list is None:
+        conf_sources_list = datastore.get_configured_sources(account, device)
 
     recents_list = datastore.get_recents(account, device)
 
@@ -358,10 +349,58 @@ def provider_settings_xml(account: str) -> ET.Element:
     return provider_settings
 
 
+def _inject_spotify_token(
+    configured_sources: list[ConfiguredSource],
+    spotify_token: str,
+    spotify_user_id: str | None = None,
+) -> list[ConfiguredSource]:
+    """Return a copy of configured_sources with the Spotify credential replaced."""
+    result = []
+    for cs in configured_sources:
+        if cs.source_key_type == "SPOTIFY" and (
+            spotify_user_id is None or cs.source_key_account == spotify_user_id
+        ):
+            logger.info(
+                "Injecting fresh Spotify token for account %s",
+                cs.source_key_account,
+            )
+            cs = ConfiguredSource(
+                display_name=cs.display_name,
+                id=cs.id,
+                secret=spotify_token,
+                secret_type=cs.secret_type,
+                source_key_type=cs.source_key_type,
+                source_key_account=cs.source_key_account,
+            )
+        result.append(cs)
+    return result
+
+
 def account_full_xml(account: str, datastore: "DataStore") -> ET.Element:
     account_elem = ET.Element("account")
     account_elem.attrib["id"] = account
     ET.SubElement(account_elem, "accountStatus").text = "OK"
+
+    # Try to get a fresh Spotify token up front so we can inject it
+    # into sources, presets, AND recents (the speaker reads the token
+    # from whichever section it uses for playback).
+    spotify_token = None
+    spotify_user_id = None
+    try:
+        from soundcork.spotify_service import SpotifyService
+
+        spotify_svc = SpotifyService()
+        spotify_token = spotify_svc.get_fresh_token_sync()
+        spotify_user_id = spotify_svc.get_spotify_user_id()
+        if spotify_token:
+            logger.info("Fresh Spotify token available for speaker injection")
+        else:
+            logger.warning(
+                "No fresh Spotify token returned (no linked account or credentials?)"
+            )
+    except Exception as e:
+        logger.warning("Spotify token injection failed: %s", e, exc_info=True)
+
     devices_elem = ET.SubElement(account_elem, "devices")
     last_device_id = ""
     for device_id in datastore.list_devices(account):
@@ -369,6 +408,14 @@ def account_full_xml(account: str, datastore: "DataStore") -> ET.Element:
             continue
         last_device_id = device_id
         device_info = datastore.get_device_info(account, device_id)
+
+        # Build the configured sources list once per device, with
+        # the fresh Spotify token injected if available.
+        conf_sources = datastore.get_configured_sources(account, device_id)
+        if spotify_token:
+            conf_sources = _inject_spotify_token(
+                conf_sources, spotify_token, spotify_user_id
+            )
 
         device_elem = ET.SubElement(devices_elem, "device")
         device_elem.attrib["deviceid"] = device_id
@@ -389,8 +436,8 @@ def account_full_xml(account: str, datastore: "DataStore") -> ET.Element:
         ).text = device_info.firmware_version
         ET.SubElement(device_elem, "ipaddress").text = device_info.ip_address
         ET.SubElement(device_elem, "name").text = device_info.name
-        device_elem.append(presets_xml(datastore, account, device_id))
-        device_elem.append(recents_xml(datastore, account, device_id))
+        device_elem.append(presets_xml(datastore, account, device_id, conf_sources))
+        device_elem.append(recents_xml(datastore, account, device_id, conf_sources))
         ET.SubElement(
             device_elem, "serialnumber"
         ).text = device_info.device_serial_number
@@ -403,31 +450,21 @@ def account_full_xml(account: str, datastore: "DataStore") -> ET.Element:
     ET.SubElement(account_elem, "preferredLanguage").text = "en"
     account_elem.append(provider_settings_xml(account))
 
-    # Try to inject a fresh Spotify token into the sources response
-    spotify_token = None
-    spotify_user_id = None
-    try:
-        from soundcork.spotify_service import SpotifyService
-
-        spotify_svc = SpotifyService()
-        spotify_token = spotify_svc.get_fresh_token_sync()
-        spotify_user_id = spotify_svc.get_spotify_user_id()
+    # For the global sources section, reuse the last device's
+    # (already-injected) configured sources list.
+    if last_device_id:
+        conf_sources = datastore.get_configured_sources(account, last_device_id)
         if spotify_token:
-            logger.info("Fresh Spotify token available for speaker injection")
-        else:
-            logger.warning(
-                "No fresh Spotify token returned (no linked account or credentials?)"
+            conf_sources = _inject_spotify_token(
+                conf_sources, spotify_token, spotify_user_id
             )
-    except Exception as e:
-        logger.warning("Spotify token injection failed: %s", e, exc_info=True)
+    else:
+        conf_sources = []
 
-    account_elem.append(
-        all_sources_xml(
-            datastore.get_configured_sources(account, last_device_id),
-            spotify_token=spotify_token,
-            spotify_user_id=spotify_user_id,
-        )
-    )
+    sources_elem = ET.Element("sources")
+    for cs in conf_sources:
+        sources_elem.append(configured_source_xml(cs))
+    account_elem.append(sources_elem)
 
     return account_elem
 
