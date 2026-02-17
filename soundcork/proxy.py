@@ -339,13 +339,10 @@ class ProxyMiddleware(BaseHTTPMiddleware):
                 upstream_url=upstream_url,
             )
 
-        # Upstream responded — record success (closes circuit if it was open)
-        _circuit_breaker.record_success(upstream_base)
-
         resp_body = upstream_resp.content
         resp_headers = dict(upstream_resp.headers)
 
-        # Log the upstream exchange
+        # Log the upstream exchange (always, even if we fall back)
         _log_exchange(
             log_dir=self._settings.soundcork_log_dir,
             method=method,
@@ -358,6 +355,27 @@ class ProxyMiddleware(BaseHTTPMiddleware):
             resp_headers=resp_headers,
             resp_body=resp_body,
         )
+
+        # If upstream returned 404 or 5xx, fall back to local handler
+        # (e.g. Bose removed the API but the server still responds)
+        if upstream_resp.status_code == 404 or upstream_resp.status_code >= 500:
+            _circuit_breaker.record_failure(upstream_base)
+            logger.warning(
+                "UPSTREAM HTTP %d: %s %s -> %s — falling back to local",
+                upstream_resp.status_code,
+                method,
+                path,
+                upstream_url,
+            )
+            return await self._log_local(
+                request,
+                call_next,
+                fallback=f"upstream_http_{upstream_resp.status_code}",
+                upstream_url=upstream_url,
+            )
+
+        # Upstream responded successfully — record success (closes circuit)
+        _circuit_breaker.record_success(upstream_base)
 
         # Strip content-encoding/content-length since httpx already decoded
         excluded = {"content-encoding", "content-length", "transfer-encoding"}
