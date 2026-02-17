@@ -21,8 +21,8 @@ SPOTIFY_AUTHORIZE_URL = "https://accounts.spotify.com/authorize"
 SPOTIFY_TOKEN_URL = "https://accounts.spotify.com/api/token"
 SPOTIFY_API_BASE = "https://api.spotify.com/v1"
 
-# Scopes needed for user profile and entity resolution
-SPOTIFY_SCOPES = "user-read-private user-read-email"
+# Scopes needed for streaming playback, user profile, and entity resolution
+SPOTIFY_SCOPES = "streaming user-read-private user-read-email user-read-playback-state user-modify-playback-state"
 
 
 class SpotifyService:
