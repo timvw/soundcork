@@ -20,32 +20,36 @@ There are two completely separate ways Spotify works on a SoundTouch speaker. Th
 
 ## Automatic Spotify Support
 
-Soundcork can keep Spotify presets working automatically. There are two mechanisms, and both can run together:
+Soundcork can keep Spotify presets working automatically. There are two mechanisms that serve different purposes, and both run together:
 
-### OAuth Token Intercept (Primary)
+### ZeroConf Primer (Cold Boot Activation)
 
-The speaker firmware has built-in token refresh logic. It periodically calls an OAuth endpoint to get a fresh Spotify access token. Soundcork intercepts these requests and returns a valid token.
+On cold boot, the speaker does **not** request a Spotify token — it only fetches account data, source providers, and streaming tokens. Without an active Spotify session, presets fail silently.
+
+The ZeroConf primer solves this by proactively pushing a fresh Spotify access token to the speaker via the ZeroConf endpoint (port 8200). This is the same mechanism the Spotify desktop app uses when you cast to a speaker.
+
+**When it runs:**
+- On speaker boot (`power_on` event), with retry/backoff (5s, 10s, 20s delays)
+- Periodically every 45 minutes (tokens expire after 1 hour)
+- When a new speaker is first seen via marge requests
+
+**Boot sequence observed:**
+```
+power_on → bmx/services → media icons → sourceproviders → /full → streaming_token → provider_settings
+```
+No OAuth token request happens during boot — the ZeroConf primer is what activates Spotify.
+
+### OAuth Token Intercept (Ongoing Refresh)
+
+Once the speaker has an active Spotify session (from the ZeroConf primer or a previous Spotify Connect cast), it will periodically refresh its token by calling an OAuth endpoint. Soundcork intercepts these requests and returns a valid token.
 
 **How it works:**
 1. Speaker sends `POST /oauth/device/{deviceId}/music/musicprovider/15/token/cs3`
 2. Soundcork refreshes the token using the stored Spotify account credentials
 3. Returns a fresh access token as JSON
-4. The speaker uses this token for Spotify playback
+4. The speaker uses this token for continued Spotify playback
 
-This is transparent — the speaker manages its own refresh cycle, just like it did with the real Bose servers.
-
-**No extra configuration needed** beyond the initial Spotify account setup (see below). The speaker already sends these requests to the same server as marge.
-
-### ZeroConf Primer (Optional Fallback)
-
-As a belt-and-suspenders approach, soundcork can also proactively push Spotify tokens to the speaker via the ZeroConf endpoint (port 8200). This uses the same mechanism the Spotify desktop app uses.
-
-**When it runs:**
-- On speaker boot (`power_on` event), with retry/backoff
-- Periodically every 45 minutes (tokens expire after 1 hour)
-- When a new speaker is first seen
-
-This is useful as a fallback for edge cases where the OAuth intercept might not trigger quickly enough (e.g., immediately after a cold boot).
+This is transparent — the speaker manages its own refresh cycle, just like it did with `streamingoauth.bose.com`. No extra DNS configuration needed — the speaker already sends these requests to the same server as marge.
 
 ## Setup
 
