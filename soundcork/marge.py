@@ -197,7 +197,9 @@ def configured_source_xml(conf_source: ConfiguredSource) -> ET.Element:
     ET.SubElement(source, "createdOn").text = default_datestr
     credential = ET.SubElement(source, "credential")
     credential.text = conf_source.secret
-    credential.attrib["type"] = "token"
+    # Preserve the original secretType from Sources.xml (e.g. "token_version_3"
+    # for Spotify). The speaker firmware may handle different types differently.
+    credential.attrib["type"] = conf_source.secret_type or "token"
     ET.SubElement(source, "name").text = conf_source.source_key_account
     ET.SubElement(source, "sourceproviderid").text = str(
         PROVIDERS.index(conf_source.source_key_type) + 1
