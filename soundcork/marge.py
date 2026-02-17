@@ -414,8 +414,12 @@ def account_full_xml(account: str, datastore: "DataStore") -> ET.Element:
         spotify_user_id = spotify_svc.get_spotify_user_id()
         if spotify_token:
             logger.info("Fresh Spotify token available for speaker injection")
-    except Exception:
-        logger.debug("Spotify token injection not available", exc_info=True)
+        else:
+            logger.warning(
+                "No fresh Spotify token returned (no linked account or credentials?)"
+            )
+    except Exception as e:
+        logger.warning("Spotify token injection failed: %s", e, exc_info=True)
 
     account_elem.append(
         all_sources_xml(
