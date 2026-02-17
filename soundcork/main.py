@@ -7,6 +7,7 @@ from http import HTTPStatus
 from typing import Annotated
 
 from fastapi import Depends, FastAPI, HTTPException, Path, Request, Response
+from fastapi.responses import JSONResponse
 from fastapi.responses import FileResponse
 from fastapi_etag import Etag
 
@@ -143,6 +144,53 @@ def power_on(request: Request):
     source_ip = request.headers.get("x-forwarded-for", "").split(",")[0].strip() or None
     zeroconf_primer.on_power_on(source_ip)
     return
+
+
+@app.post(
+    "/oauth/device/{device_id}/music/musicprovider/{provider_id}/token/{token_type}",
+    tags=["oauth"],
+    status_code=HTTPStatus.OK,
+)
+def oauth_token_refresh(device_id: str, provider_id: str, token_type: str):
+    """Spotify OAuth token refresh endpoint.
+
+    Intercepts the speaker's token refresh requests that would normally
+    go to streamingoauth.bose.com.  The speaker calls this when it needs
+    a fresh Spotify access token for playback.
+
+    Only handles provider 15 (Spotify).  Other providers return 404.
+    """
+    if provider_id != "15":
+        logger.info(
+            "OAuth token request for unsupported provider %s (device=%s)",
+            provider_id,
+            device_id,
+        )
+        return Response(status_code=404)
+
+    token = spotify_service.get_fresh_token_sync()
+    if not token:
+        logger.warning(
+            "OAuth token refresh failed — no Spotify token available (device=%s)",
+            device_id,
+        )
+        return JSONResponse(
+            status_code=500,
+            content={
+                "error": "no_token",
+                "error_description": "No Spotify account linked",
+            },
+        )
+
+    logger.info("OAuth token refresh for device %s (provider=Spotify)", device_id)
+    return JSONResponse(
+        content={
+            "access_token": token,
+            "token_type": "Bearer",
+            "expires_in": 3600,
+            "scope": "streaming user-read-email user-read-private playlist-read-private playlist-read-collaborative user-library-read user-read-playback-state user-modify-playback-state user-read-currently-playing user-read-recently-played",
+        }
+    )
 
 
 @app.get(
