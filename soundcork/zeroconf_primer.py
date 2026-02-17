@@ -8,10 +8,15 @@ to their ZeroConf endpoint (port 8200) using the addUser action.
 This is the same mechanism the Spotify desktop app uses: a plain
 access token is sent as the blob parameter (no DH encryption).
 
+Speakers are tracked dynamically: when a speaker contacts any marge
+endpoint, its account/device ID is captured and its IP is looked up
+from the datastore.  This avoids the need to scan directories and
+ensures newly added speakers are primed automatically.
+
 The primer runs:
-  - Once on speaker boot (triggered by the power_on endpoint)
-  - Periodically (every ~45 minutes) to keep the session alive
-    before the access token expires (1 hour lifetime)
+  - On speaker boot (triggered by the power_on endpoint), with retry
+  - When a new speaker is seen for the first time
+  - Periodically to keep sessions alive before tokens expire (1 hour)
 
 Configuration:
   - SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET must be set
@@ -19,11 +24,13 @@ Configuration:
   - Speaker IP addresses are read from the datastore (DeviceInfo)
 """
 
+import json
 import logging
 import threading
 import time
 import urllib.parse
 import urllib.request
+from dataclasses import dataclass, field
 
 from soundcork.config import Settings
 from soundcork.datastore import DataStore
@@ -32,7 +39,19 @@ from soundcork.spotify_service import SpotifyService
 logger = logging.getLogger(__name__)
 
 ZEROCONF_PORT = 8200
-REPRIME_INTERVAL_SECONDS = 45 * 60  # 45 minutes
+PERIODIC_CHECK_SECONDS = 45 * 60  # 45 minutes
+BOOT_RETRY_DELAYS = [5, 10, 20]  # seconds between retries after power_on
+
+
+@dataclass
+class TrackedSpeaker:
+    """A speaker that has been seen by soundcork."""
+
+    account_id: str
+    device_id: str
+    ip_address: str | None = None
+    last_primed: float = 0.0  # timestamp of last successful prime
+    prime_failures: int = 0
 
 
 class ZeroConfPrimer:
@@ -46,70 +65,68 @@ class ZeroConfPrimer:
         self._datastore = datastore
         self._settings = settings
         self._timer: threading.Timer | None = None
+        self._speakers: dict[str, TrackedSpeaker] = {}  # device_id -> TrackedSpeaker
+        self._lock = threading.Lock()
+        self._cached_token: str | None = None
+        self._token_expires_at: float = 0.0
 
-    def prime_speaker(self, speaker_ip: str) -> bool:
-        """Send addUser to a speaker's ZeroConf endpoint.
+    # --- Speaker registration ---
 
-        Returns True if the speaker accepted and set activeUser.
+    def register_speaker(self, account_id: str, device_id: str):
+        """Register a speaker that contacted a marge endpoint.
+
+        Called from marge request handlers.  If this is a new speaker,
+        resolves its IP and primes it in the background.
         """
-        token = self._spotify.get_fresh_token_sync()
-        if not token:
-            logger.warning("No Spotify token available — cannot prime %s", speaker_ip)
-            return False
-
-        user_id = self._spotify.get_spotify_user_id()
-        if not user_id:
-            logger.warning("No Spotify user ID — cannot prime %s", speaker_ip)
-            return False
-
-        try:
-            result = self._send_add_user(speaker_ip, user_id, token)
-            status = result.get("status", -1)
-            if status != 101:
-                logger.warning(
-                    "addUser to %s returned status %s: %s",
-                    speaker_ip,
-                    status,
-                    result.get("statusString", ""),
-                )
-                return False
-
-            logger.info("addUser accepted by %s (status 101)", speaker_ip)
-
-            # Verify activeUser was actually set
-            time.sleep(2)
-            active_user = self._get_active_user(speaker_ip)
-            if active_user:
-                logger.info(
-                    "Speaker %s primed for Spotify (activeUser=%s)",
-                    speaker_ip,
-                    active_user,
-                )
-                return True
-            else:
-                logger.warning(
-                    "Speaker %s returned 101 but activeUser is still empty",
-                    speaker_ip,
-                )
-                return False
-
-        except Exception:
-            logger.exception("Failed to prime speaker %s", speaker_ip)
-            return False
-
-    def prime_all_speakers(self):
-        """Prime all known speakers."""
         if not self._settings.spotify_client_id:
-            logger.debug("Spotify not configured — skipping primer")
             return
 
-        speakers = self._discover_speaker_ips()
-        if not speakers:
-            logger.info("No speakers found to prime")
+        is_new = False
+        with self._lock:
+            if device_id not in self._speakers:
+                ip = self._resolve_speaker_ip(account_id, device_id)
+                self._speakers[device_id] = TrackedSpeaker(
+                    account_id=account_id,
+                    device_id=device_id,
+                    ip_address=ip,
+                )
+                is_new = True
+                logger.info(
+                    "New speaker registered: %s (account=%s, ip=%s)",
+                    device_id,
+                    account_id,
+                    ip,
+                )
+            else:
+                # Update account_id in case it changed
+                self._speakers[device_id].account_id = account_id
+
+        if is_new:
+            speaker = self._speakers[device_id]
+            if speaker.ip_address:
+                threading.Thread(
+                    target=self._prime_if_needed,
+                    args=(speaker,),
+                    daemon=True,
+                ).start()
+
+    def on_power_on(self, source_ip: str | None = None):
+        """Called when a speaker sends power_on.
+
+        Primes all known speakers with retry/backoff, since the
+        speaker's ZeroConf port may not be ready immediately.
+        If no speakers are registered yet, discovers from datastore.
+        """
+        if not self._settings.spotify_client_id:
             return
 
-        for ip in speakers:
-            self.prime_speaker(ip)
+        threading.Thread(
+            target=self._power_on_prime,
+            args=(source_ip,),
+            daemon=True,
+        ).start()
+
+    # --- Periodic ---
 
     def start_periodic(self):
         """Start the periodic re-prime background task."""
@@ -117,10 +134,13 @@ class ZeroConfPrimer:
             logger.info("Spotify not configured — periodic primer disabled")
             return
 
+        # Seed the registry from the datastore on startup
+        self._seed_from_datastore()
+
         self._schedule_next()
         logger.info(
             "Periodic Spotify primer started (every %d minutes)",
-            REPRIME_INTERVAL_SECONDS // 60,
+            PERIODIC_CHECK_SECONDS // 60,
         )
 
     def stop_periodic(self):
@@ -129,66 +149,200 @@ class ZeroConfPrimer:
             self._timer.cancel()
             self._timer = None
 
+    # --- Internal ---
+
+    def _seed_from_datastore(self):
+        """Populate the speaker registry from the datastore on startup."""
+        import os
+
+        data_dir = self._settings.data_dir
+        if not data_dir or not os.path.isdir(data_dir):
+            return
+
+        for account_id in os.listdir(data_dir):
+            account_path = os.path.join(data_dir, account_id)
+            if not os.path.isdir(account_path):
+                continue
+
+            try:
+                device_ids = self._datastore.list_devices(account_id)
+            except (StopIteration, FileNotFoundError):
+                continue
+
+            for device_id in device_ids:
+                if not device_id:
+                    continue
+                ip = self._resolve_speaker_ip(account_id, device_id)
+                if ip:
+                    with self._lock:
+                        if device_id not in self._speakers:
+                            self._speakers[device_id] = TrackedSpeaker(
+                                account_id=account_id,
+                                device_id=device_id,
+                                ip_address=ip,
+                            )
+
+        count = len(self._speakers)
+        if count:
+            logger.info("Seeded %d speaker(s) from datastore", count)
+
+    def _resolve_speaker_ip(self, account_id: str, device_id: str) -> str | None:
+        """Look up a speaker's IP address from the datastore."""
+        try:
+            info = self._datastore.get_device_info(account_id, device_id)
+            return info.ip_address
+        except Exception:
+            logger.debug("Could not resolve IP for %s/%s", account_id, device_id)
+            return None
+
+    def _get_token(self) -> tuple[str, str] | None:
+        """Get a valid Spotify access token and user ID.
+
+        Caches the token to avoid refreshing for every speaker.
+        Returns (token, user_id) or None.
+        """
+        user_id = self._spotify.get_spotify_user_id()
+        if not user_id:
+            logger.warning("No Spotify user ID configured")
+            return None
+
+        now = time.time()
+        if self._cached_token and now < self._token_expires_at - 120:
+            return self._cached_token, user_id
+
+        token = self._spotify.get_fresh_token_sync()
+        if not token:
+            logger.warning("Could not get Spotify access token")
+            return None
+
+        self._cached_token = token
+        self._token_expires_at = now + 3600  # tokens last 1 hour
+        return token, user_id
+
+    def _prime_if_needed(self, speaker: TrackedSpeaker) -> bool:
+        """Check activeUser and prime only if empty."""
+        if not speaker.ip_address:
+            return False
+
+        try:
+            active_user = self._get_active_user(speaker.ip_address)
+            if active_user:
+                logger.debug(
+                    "Speaker %s already primed (activeUser=%s)",
+                    speaker.ip_address,
+                    active_user,
+                )
+                speaker.last_primed = time.time()
+                return True
+        except Exception:
+            logger.debug("Could not check activeUser for %s", speaker.ip_address)
+
+        return self._prime_speaker(speaker)
+
+    def _prime_speaker(self, speaker: TrackedSpeaker) -> bool:
+        """Send addUser to a speaker."""
+        if not speaker.ip_address:
+            return False
+
+        creds = self._get_token()
+        if not creds:
+            return False
+        token, user_id = creds
+
+        try:
+            result = self._send_add_user(speaker.ip_address, user_id, token)
+            status = result.get("status", -1)
+            if status != 101:
+                logger.warning(
+                    "addUser to %s returned status %s: %s",
+                    speaker.ip_address,
+                    status,
+                    result.get("statusString", ""),
+                )
+                speaker.prime_failures += 1
+                return False
+
+            logger.info("addUser accepted by %s (status 101)", speaker.ip_address)
+
+            # Verify activeUser was set
+            time.sleep(2)
+            active_user = self._get_active_user(speaker.ip_address)
+            if active_user:
+                logger.info(
+                    "Speaker %s primed for Spotify (activeUser=%s)",
+                    speaker.ip_address,
+                    active_user,
+                )
+                speaker.last_primed = time.time()
+                speaker.prime_failures = 0
+                return True
+            else:
+                logger.warning(
+                    "Speaker %s returned 101 but activeUser still empty",
+                    speaker.ip_address,
+                )
+                speaker.prime_failures += 1
+                return False
+
+        except Exception:
+            logger.exception("Failed to prime speaker %s", speaker.ip_address)
+            speaker.prime_failures += 1
+            return False
+
+    def _power_on_prime(self, source_ip: str | None):
+        """Prime speakers after boot with retry/backoff."""
+        with self._lock:
+            speakers = list(self._speakers.values())
+
+        if not speakers:
+            logger.info("No speakers registered — nothing to prime")
+            return
+
+        for delay in BOOT_RETRY_DELAYS:
+            logger.info(
+                "Speaker booted — waiting %ds before priming %d speaker(s)...",
+                delay,
+                len(speakers),
+            )
+            time.sleep(delay)
+
+            all_ok = True
+            for speaker in speakers:
+                if not speaker.ip_address:
+                    continue
+                if not self._prime_if_needed(speaker):
+                    all_ok = False
+
+            if all_ok:
+                logger.info("All speakers primed successfully")
+                return
+
+        logger.warning("Some speakers failed to prime after all retries")
+
     def _schedule_next(self):
-        """Schedule the next re-prime."""
-        self._timer = threading.Timer(REPRIME_INTERVAL_SECONDS, self._periodic_tick)
+        """Schedule the next periodic check."""
+        self._timer = threading.Timer(PERIODIC_CHECK_SECONDS, self._periodic_tick)
         self._timer.daemon = True
         self._timer.start()
 
     def _periodic_tick(self):
-        """Called by the timer — prime all speakers and reschedule."""
+        """Periodic task: check and re-prime all speakers if needed."""
         try:
-            logger.info("Periodic Spotify re-prime running...")
-            self.prime_all_speakers()
+            logger.info("Periodic Spotify primer check running...")
+            with self._lock:
+                speakers = list(self._speakers.values())
+
+            for speaker in speakers:
+                self._prime_if_needed(speaker)
+
         except Exception:
-            logger.exception("Error during periodic Spotify re-prime")
+            logger.exception("Error during periodic Spotify primer")
         finally:
             self._schedule_next()
-
-    def _discover_speaker_ips(self) -> list[str]:
-        """Get IP addresses of all known speakers from the datastore."""
-        ips = []
-        try:
-            # Walk the data directory to find all accounts and devices
-            import os
-
-            data_dir = self._settings.data_dir
-            if not data_dir or not os.path.isdir(data_dir):
-                return ips
-
-            for account_id in os.listdir(data_dir):
-                account_path = os.path.join(data_dir, account_id)
-                if not os.path.isdir(account_path):
-                    continue
-
-                try:
-                    device_ids = self._datastore.list_devices(account_id)
-                except (StopIteration, FileNotFoundError):
-                    continue
-
-                for device_id in device_ids:
-                    if not device_id:
-                        continue
-                    try:
-                        info = self._datastore.get_device_info(account_id, device_id)
-                        if info.ip_address:
-                            ips.append(info.ip_address)
-                    except Exception:
-                        logger.debug(
-                            "Could not read device info for %s/%s",
-                            account_id,
-                            device_id,
-                        )
-        except Exception:
-            logger.exception("Error discovering speaker IPs")
-
-        return ips
 
     @staticmethod
     def _send_add_user(speaker_ip: str, user_id: str, token: str) -> dict:
         """Send addUser to the speaker's ZeroConf endpoint."""
-        import json
-
         post_data = urllib.parse.urlencode(
             {
                 "action": "addUser",
@@ -212,8 +366,6 @@ class ZeroConfPrimer:
     @staticmethod
     def _get_active_user(speaker_ip: str) -> str:
         """Check the speaker's activeUser via ZeroConf getInfo."""
-        import json
-
         url = f"http://{speaker_ip}:{ZEROCONF_PORT}/zc?action=getInfo"
         with urllib.request.urlopen(url, timeout=5) as resp:
             info = json.loads(resp.read())
