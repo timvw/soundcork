@@ -226,7 +226,11 @@ async def scmudc_telemetry(device_id: str, request: Request):
     status_code=HTTPStatus.OK,
 )
 async def stapp_telemetry(device_id: str, request: Request):
-    """SoundTouch app analytics — equivalent to scmudc but used by the mobile app."""
+    """SoundTouch app analytics — equivalent to scmudc but used by the mobile app.
+
+    Request format: same JSON envelope/payload as scmudc (already documented in #200).
+    Response: bare 200 OK, no body.  Fire-and-forget.
+    """
     body = await request.body()
     logger.debug("stapp event from %s: %s", device_id, body[:500])
     return Response(status_code=200)
@@ -238,7 +242,25 @@ async def stapp_telemetry(device_id: str, request: Request):
     status_code=HTTPStatus.OK,
 )
 async def streaming_stats_usage(request: Request):
-    """Device usage statistics (play time, source stats, etc.)."""
+    """Device usage statistics (play time, source stats, etc.).
+
+    Real server (streaming.bose.com) still alive — returns 400 "Invalid
+    version in header(SOf)" without proper headers.  Request format is
+    XML or JSON with deviceId, accountId, timestamp, eventType, parameters.
+    Response: bare 200 OK, no body.
+
+    Logging enabled to capture actual speaker payloads.
+    """
+    body = await request.body()
+    if body:
+        content_type = request.headers.get("content-type", "")
+        headers = {k: v for k, v in request.headers.items() if k.lower() != "host"}
+        logger.info(
+            "STUB stats/usage content-type=%s headers=%s body=%s",
+            content_type,
+            headers,
+            body[:2000].decode("utf-8", errors="replace"),
+        )
     return Response(status_code=200)
 
 
@@ -248,7 +270,23 @@ async def streaming_stats_usage(request: Request):
     status_code=HTTPStatus.OK,
 )
 async def streaming_stats_error(request: Request):
-    """Device error statistics (connection failures, codec errors, etc.)."""
+    """Device error statistics (connection failures, codec errors, etc.).
+
+    Request format: XML or JSON with deviceId, errorCode, errorMessage,
+    timestamp, details.  Response: bare 200 OK, no body.
+
+    Logging enabled to capture actual speaker payloads.
+    """
+    body = await request.body()
+    if body:
+        content_type = request.headers.get("content-type", "")
+        headers = {k: v for k, v in request.headers.items() if k.lower() != "host"}
+        logger.info(
+            "STUB stats/error content-type=%s headers=%s body=%s",
+            content_type,
+            headers,
+            body[:2000].decode("utf-8", errors="replace"),
+        )
     return Response(status_code=200)
 
 
@@ -258,34 +296,57 @@ async def streaming_stats_error(request: Request):
     status_code=HTTPStatus.OK,
 )
 async def bmx_tunein_report(request: Request):
-    """TuneIn playback reporting (listen time, station stats)."""
+    """TuneIn playback reporting (listen time, station stats).
+
+    Real server (content.api.bose.io) still alive — returns 403
+    "Invalid client id".  Request format unknown.
+
+    Logging enabled to capture actual speaker payloads.
+    """
+    body = await request.body()
+    if body:
+        content_type = request.headers.get("content-type", "")
+        headers = {k: v for k, v in request.headers.items() if k.lower() != "host"}
+        logger.info(
+            "STUB bmx/tunein/report content-type=%s headers=%s body=%s",
+            content_type,
+            headers,
+            body[:2000].decode("utf-8", errors="replace"),
+        )
     return Response(status_code=200)
 
 
 ##############################################################################
-# Customer / account profile stubs
+# Customer / account profile
 #
-# The speaker and mobile app call these for account metadata.  The Go
-# implementation (gesellix/Bose-SoundTouch) provides full mock responses;
-# we return minimal valid XML/responses.
+# Response format aligned with gesellix/Bose-SoundTouch Go implementation:
+# root element <customer>, Content-Type: application/xml.
+# Real Bose server (streaming.bose.com) still returns 406 with ETag —
+# alive but wants a specific Accept header.
 ##############################################################################
 
 
 @app.get(
     "/customer/account/{account}",
-    response_class=BoseXMLResponse,
     tags=["customer"],
 )
 def customer_account_profile(account: str):
-    """Returns a minimal account profile (email, country, language)."""
-    profile = ET.Element("accountProfile")
-    profile.attrib["id"] = account
-    ET.SubElement(profile, "emailAddress").text = "user@example.com"
-    ET.SubElement(profile, "firstName").text = ""
-    ET.SubElement(profile, "lastName").text = ""
-    ET.SubElement(profile, "country").text = "US"
-    ET.SubElement(profile, "language").text = "en"
-    return bose_xml_str(profile)
+    """Returns account profile.  XML root: <customer>."""
+    profile = ET.Element("customer")
+    ET.SubElement(profile, "accountID").text = account
+    ET.SubElement(profile, "email").text = "user@example.com"
+    ET.SubElement(profile, "firstName").text = "SoundTouch"
+    ET.SubElement(profile, "lastName").text = "User"
+    ET.SubElement(profile, "countryCode").text = "US"
+    ET.SubElement(profile, "languageCode").text = "en"
+    ET.SubElement(profile, "street")
+    ET.SubElement(profile, "city")
+    ET.SubElement(profile, "postalCode")
+    ET.SubElement(profile, "state")
+    ET.SubElement(profile, "phone")
+    ET.SubElement(profile, "marketingOptIn").text = "false"
+    xml_str = bose_xml_str(profile)
+    return Response(content=xml_str, media_type="application/xml")
 
 
 @app.post(
@@ -294,7 +355,18 @@ def customer_account_profile(account: str):
     status_code=HTTPStatus.OK,
 )
 async def update_customer_account_profile(account: str, request: Request):
-    """Accept account profile update (stub)."""
+    """Accept account profile update.  Request format unknown — logging."""
+    body = await request.body()
+    if body:
+        content_type = request.headers.get("content-type", "")
+        headers = {k: v for k, v in request.headers.items() if k.lower() != "host"}
+        logger.info(
+            "STUB customer/account/%s (update) content-type=%s headers=%s body=%s",
+            account,
+            content_type,
+            headers,
+            body[:2000].decode("utf-8", errors="replace"),
+        )
     return Response(status_code=200)
 
 
@@ -304,7 +376,16 @@ async def update_customer_account_profile(account: str, request: Request):
     status_code=HTTPStatus.OK,
 )
 async def change_customer_password(account: str, request: Request):
-    """Accept password change (stub)."""
+    """Accept password change.  Request format unknown — logging."""
+    body = await request.body()
+    if body:
+        content_type = request.headers.get("content-type", "")
+        logger.info(
+            "STUB customer/account/%s/password content-type=%s body=%s",
+            account,
+            content_type,
+            body[:2000].decode("utf-8", errors="replace"),
+        )
     return Response(status_code=200)
 
 
@@ -322,25 +403,42 @@ async def change_customer_password(account: str, request: Request):
     status_code=HTTPStatus.OK,
 )
 async def customer_support_upload(request: Request):
-    """Accept customer support diagnostic upload (stub)."""
+    """Accept customer support diagnostic upload.
+
+    Go implementation expects <device-data> XML with device info and
+    diagnostic-data (RSSI, gateway IP, MAC addresses, etc.).
+    Response: 200 OK, Content-Type: application/vnd.bose.streaming-v1.2+xml.
+
+    Logging enabled to capture actual speaker payloads.
+    """
     body = await request.body()
-    logger.debug("Customer support upload: %d bytes", len(body))
-    return Response(status_code=200)
+    if body:
+        content_type = request.headers.get("content-type", "")
+        headers = {k: v for k, v in request.headers.items() if k.lower() != "host"}
+        logger.info(
+            "STUB customersupport content-type=%s headers=%s body=%s",
+            content_type,
+            headers,
+            body[:2000].decode("utf-8", errors="replace"),
+        )
+    return Response(
+        status_code=200,
+        media_type="application/vnd.bose.streaming-v1.2+xml",
+    )
 
 
 @app.get(
     "/marge/streaming/device_setting/account/{account}/device/{device}/device_settings",
-    response_class=BoseXMLResponse,
     tags=["marge"],
 )
 def get_device_settings(account: str, device: str):
-    """Returns minimal device settings (clock format, etc.)."""
+    """Returns device settings.  XML root: <deviceSettings>."""
     device_settings = ET.Element("deviceSettings")
-    device_settings.attrib["deviceID"] = device
-    setting = ET.SubElement(device_settings, "setting")
-    ET.SubElement(setting, "key").text = "clockFormat"
-    ET.SubElement(setting, "value").text = "24h"
-    return bose_xml_str(device_settings)
+    setting = ET.SubElement(device_settings, "deviceSetting")
+    ET.SubElement(setting, "name").text = "CLOCK_FORMAT"
+    ET.SubElement(setting, "value").text = "24HR"
+    xml_str = bose_xml_str(device_settings)
+    return Response(content=xml_str, media_type="application/xml")
 
 
 @app.post(
@@ -349,21 +447,28 @@ def get_device_settings(account: str, device: str):
     status_code=HTTPStatus.OK,
 )
 async def update_device_settings(account: str, device: str, request: Request):
-    """Accept device settings update (stub)."""
+    """Accept device settings update.  Request format unknown — logging."""
+    body = await request.body()
+    if body:
+        content_type = request.headers.get("content-type", "")
+        logger.info(
+            "STUB device_settings/%s/%s (update) content-type=%s body=%s",
+            account,
+            device,
+            content_type,
+            body[:2000].decode("utf-8", errors="replace"),
+        )
     return Response(status_code=200)
 
 
 @app.get(
     "/marge/streaming/account/{account}/emailaddress",
-    response_class=BoseXMLResponse,
     tags=["marge"],
 )
 def get_email_address(account: str):
-    """Returns the account email address."""
-    email_elem = ET.Element("emailAddress")
-    email_elem.attrib["accountId"] = account
-    email_elem.text = "user@example.com"
-    return bose_xml_str(email_elem)
+    """Returns the account email address.  XML root: <emailAddress>."""
+    xml_str = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><emailAddress>user@example.com</emailAddress>'
+    return Response(content=xml_str, media_type="application/xml")
 
 
 @app.post(
