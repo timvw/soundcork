@@ -119,13 +119,26 @@ async def log_request_body(request: Request, call_next):
     if body or response.status_code == 404:
         body_preview = body[:2000].decode("utf-8", errors="replace") if body else ""
         query_str = f"?{query}" if query else ""
+        # Log headers for unknown endpoints (scmudc, etc.) to aid research
+        headers_str = ""
+        if "scmudc" in path or response.status_code == 404:
+            headers_str = (
+                " headers={"
+                + ", ".join(
+                    f"{k}: {v}"
+                    for k, v in request.headers.items()
+                    if k.lower() not in ("host",)
+                )
+                + "}"
+            )
         logger.info(
-            "REQUEST %s %s%s [%d] content-type=%s body=%s",
+            "REQUEST %s %s%s [%d] content-type=%s%s body=%s",
             method,
             path,
             query_str,
             response.status_code,
             content_type,
+            headers_str,
             body_preview,
         )
 
