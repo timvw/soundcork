@@ -188,6 +188,29 @@ def power_on(request: Request):
 
 
 @app.post(
+    "/v1/scmudc/{device_id}",
+    tags=["analytics"],
+    status_code=HTTPStatus.OK,
+)
+async def scmudc_telemetry(device_id: str, request: Request):
+    """Device telemetry event stream (analytics).
+
+    The speaker posts real-time events here: power state changes,
+    playback state, volume changes, source switches, art updates, etc.
+    This is Bose's analytics/telemetry endpoint — equivalent to
+    POST /v1/stapp/{deviceId} used by the mobile app (Stockholm).
+
+    The speaker sends events regardless of whether the server accepts
+    them (fire-and-forget).  Returning 200 OK silences the 404 noise.
+
+    See: https://github.com/gesellix/Bose-SoundTouch/blob/main/docs/reference/CLOUD-API.md
+    """
+    body = await request.body()
+    logger.debug("scmudc event from %s: %s", device_id, body[:500])
+    return Response(status_code=200)
+
+
+@app.post(
     "/oauth/device/{device_id}/music/musicprovider/{provider_id}/token/{token_type}",
     tags=["oauth"],
     status_code=HTTPStatus.OK,
