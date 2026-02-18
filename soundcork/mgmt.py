@@ -220,6 +220,26 @@ def spotify_accounts(
     }
 
 
+@router.get("/spotify/token")
+def spotify_token(
+    _user: str = Depends(verify_credentials),
+):
+    """Get a fresh Spotify access token and username.
+
+    Used by the on-speaker boot primer to prime the ZeroConf endpoint
+    without needing Spotify credentials stored on the device.
+    """
+    user_id = spotify.get_spotify_user_id()
+    if not user_id:
+        raise HTTPException(status_code=404, detail="No Spotify account linked")
+
+    access_token = spotify.get_fresh_token_sync()
+    if not access_token:
+        raise HTTPException(status_code=503, detail="Failed to get Spotify token")
+
+    return {"accessToken": access_token, "username": user_id}
+
+
 @router.post("/spotify/entity")
 async def spotify_entity(
     request: Request,
