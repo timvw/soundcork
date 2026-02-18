@@ -106,22 +106,32 @@ app.add_middleware(ProxyMiddleware)
 
 @app.middleware("http")
 async def log_request_body(request: Request, call_next):
-    """Log all incoming requests with their body for API research."""
-    body = await request.body()
-    method = request.method
-    path = request.url.path
-    query = str(request.url.query)
-    content_type = request.headers.get("content-type", "")
+    """Log incoming requests — controlled by LOG_REQUEST_BODY / LOG_REQUEST_HEADERS env vars."""
+    body = b""
+    if settings.log_request_body or settings.log_request_headers:
+        body = await request.body()
 
     response = await call_next(request)
 
-    # Log all non-GET requests with a body, and all 404s
-    if body or response.status_code == 404:
-        body_preview = body[:2000].decode("utf-8", errors="replace") if body else ""
+    # Always log 404s (unknown endpoints) at INFO for observability
+    if response.status_code == 404:
+        query = str(request.url.query)
         query_str = f"?{query}" if query else ""
-        # Log headers for unknown endpoints (scmudc, etc.) to aid research
+        logger.info(
+            "UNKNOWN %s %s%s [404]",
+            request.method,
+            request.url.path,
+            query_str,
+        )
+    elif settings.log_request_body and body:
+        method = request.method
+        path = request.url.path
+        query = str(request.url.query)
+        query_str = f"?{query}" if query else ""
+        content_type = request.headers.get("content-type", "")
+        body_preview = body[:2000].decode("utf-8", errors="replace")
         headers_str = ""
-        if "scmudc" in path or response.status_code == 404:
+        if settings.log_request_headers:
             headers_str = (
                 " headers={"
                 + ", ".join(
@@ -208,6 +218,160 @@ async def scmudc_telemetry(device_id: str, request: Request):
     body = await request.body()
     logger.debug("scmudc event from %s: %s", device_id, body[:500])
     return Response(status_code=200)
+
+
+##############################################################################
+# Telemetry / analytics stubs
+#
+# These endpoints receive fire-and-forget data from the speaker.  The real
+# Bose servers stored it; we just return 200 OK to prevent 404 log noise.
+##############################################################################
+
+
+@app.post(
+    "/v1/stapp/{device_id}",
+    tags=["analytics"],
+    status_code=HTTPStatus.OK,
+)
+async def stapp_telemetry(device_id: str, request: Request):
+    """SoundTouch app analytics — equivalent to scmudc but used by the mobile app."""
+    body = await request.body()
+    logger.debug("stapp event from %s: %s", device_id, body[:500])
+    return Response(status_code=200)
+
+
+@app.post(
+    "/streaming/stats/usage",
+    tags=["analytics"],
+    status_code=HTTPStatus.OK,
+)
+async def streaming_stats_usage(request: Request):
+    """Device usage statistics (play time, source stats, etc.)."""
+    return Response(status_code=200)
+
+
+@app.post(
+    "/streaming/stats/error",
+    tags=["analytics"],
+    status_code=HTTPStatus.OK,
+)
+async def streaming_stats_error(request: Request):
+    """Device error statistics (connection failures, codec errors, etc.)."""
+    return Response(status_code=200)
+
+
+@app.post(
+    "/bmx/tunein/v1/report",
+    tags=["analytics"],
+    status_code=HTTPStatus.OK,
+)
+async def bmx_tunein_report(request: Request):
+    """TuneIn playback reporting (listen time, station stats)."""
+    return Response(status_code=200)
+
+
+##############################################################################
+# Customer / account profile stubs
+#
+# The speaker and mobile app call these for account metadata.  The Go
+# implementation (gesellix/Bose-SoundTouch) provides full mock responses;
+# we return minimal valid XML/responses.
+##############################################################################
+
+
+@app.get(
+    "/customer/account/{account}",
+    response_class=BoseXMLResponse,
+    tags=["customer"],
+)
+def customer_account_profile(account: str):
+    """Returns a minimal account profile (email, country, language)."""
+    profile = ET.Element("accountProfile")
+    profile.attrib["id"] = account
+    ET.SubElement(profile, "emailAddress").text = "user@example.com"
+    ET.SubElement(profile, "firstName").text = ""
+    ET.SubElement(profile, "lastName").text = ""
+    ET.SubElement(profile, "country").text = "US"
+    ET.SubElement(profile, "language").text = "en"
+    return bose_xml_str(profile)
+
+
+@app.post(
+    "/customer/account/{account}",
+    tags=["customer"],
+    status_code=HTTPStatus.OK,
+)
+async def update_customer_account_profile(account: str, request: Request):
+    """Accept account profile update (stub)."""
+    return Response(status_code=200)
+
+
+@app.post(
+    "/customer/account/{account}/password",
+    tags=["customer"],
+    status_code=HTTPStatus.OK,
+)
+async def change_customer_password(account: str, request: Request):
+    """Accept password change (stub)."""
+    return Response(status_code=200)
+
+
+##############################################################################
+# Additional marge stubs
+#
+# Endpoints the speaker calls that were missing from soundcork but present
+# in the Go implementation (gesellix/Bose-SoundTouch).
+##############################################################################
+
+
+@app.post(
+    "/marge/streaming/support/customersupport",
+    tags=["marge"],
+    status_code=HTTPStatus.OK,
+)
+async def customer_support_upload(request: Request):
+    """Accept customer support diagnostic upload (stub)."""
+    body = await request.body()
+    logger.debug("Customer support upload: %d bytes", len(body))
+    return Response(status_code=200)
+
+
+@app.get(
+    "/marge/streaming/device_setting/account/{account}/device/{device}/device_settings",
+    response_class=BoseXMLResponse,
+    tags=["marge"],
+)
+def get_device_settings(account: str, device: str):
+    """Returns minimal device settings (clock format, etc.)."""
+    device_settings = ET.Element("deviceSettings")
+    device_settings.attrib["deviceID"] = device
+    setting = ET.SubElement(device_settings, "setting")
+    ET.SubElement(setting, "key").text = "clockFormat"
+    ET.SubElement(setting, "value").text = "24h"
+    return bose_xml_str(device_settings)
+
+
+@app.post(
+    "/marge/streaming/device_setting/account/{account}/device/{device}/device_settings",
+    tags=["marge"],
+    status_code=HTTPStatus.OK,
+)
+async def update_device_settings(account: str, device: str, request: Request):
+    """Accept device settings update (stub)."""
+    return Response(status_code=200)
+
+
+@app.get(
+    "/marge/streaming/account/{account}/emailaddress",
+    response_class=BoseXMLResponse,
+    tags=["marge"],
+)
+def get_email_address(account: str):
+    """Returns the account email address."""
+    email_elem = ET.Element("emailAddress")
+    email_elem.attrib["accountId"] = account
+    email_elem.text = "user@example.com"
+    return bose_xml_str(email_elem)
 
 
 @app.post(
