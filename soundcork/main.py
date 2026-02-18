@@ -820,6 +820,13 @@ def custom_stream_playback(request: Request) -> BmxPlaybackResponse:
     return play_custom_stream(data)
 
 
+# BMX Orion alias — Go registers this as POST, device may use GET or POST
+@app.post("/bmx/orion/v1/playback/station/{data}", tags=["bmx"])
+@app.get("/bmx/orion/v1/playback/station/{data}", tags=["bmx"])
+def bmx_orion_playback(data: str) -> BmxPlaybackResponse:
+    return play_custom_stream(data)
+
+
 @app.get("/media/{filename}", tags=["bmx"])
 def bmx_media_file(filename: str) -> FileResponse:
     sanitized_filename = "".join(
@@ -833,6 +840,7 @@ def bmx_media_file(filename: str) -> FileResponse:
 
 
 @app.get("/updates/soundtouch", tags=["swupdate"])
+@app.get("/marge/updates/soundtouch", tags=["swupdate"])
 def sw_update() -> Response:
     with open("swupdate.xml", "r") as file:
         sw_update_response = file.read()
@@ -845,6 +853,146 @@ def bose_xml_str(xml: ET.Element) -> str:
     return_xml = f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>{ET.tostring(xml, encoding="unicode")}'
 
     return return_xml
+
+
+##############################################################################
+# Root-level aliases (without /marge or /bmx prefix)
+#
+# The Go implementation registers every marge/bmx endpoint twice — once
+# under the prefix and once at the root.  This supports direct-domain
+# calls where the speaker hits streaming.bose.com/accounts/... without
+# the /marge path segment.
+#
+# We use FastAPI's add_api_route to point the alias paths at the same
+# handler functions already defined above.
+##############################################################################
+
+# --- BMX root-level aliases ---
+app.add_api_route(
+    "/registry/v1/services", bmx_services, methods=["GET"], tags=["bmx-alias"]
+)
+app.add_api_route(
+    "/tunein/v1/playback/station/{station_id}",
+    bmx_playback,
+    methods=["GET"],
+    tags=["bmx-alias"],
+)
+app.add_api_route(
+    "/tunein/v1/playback/episodes/{episode_id}",
+    bmx_podcast_info,
+    methods=["GET"],
+    tags=["bmx-alias"],
+)
+app.add_api_route(
+    "/tunein/v1/playback/episode/{episode_id}",
+    bmx_playback_podcast,
+    methods=["GET"],
+    tags=["bmx-alias"],
+)
+app.add_api_route(
+    "/orion/v1/playback/station/{data}",
+    bmx_orion_playback,
+    methods=["GET", "POST"],
+    tags=["bmx-alias"],
+)
+
+# --- Marge root-level aliases ---
+app.add_api_route(
+    "/streaming/sourceproviders",
+    streamingsourceproviders,
+    methods=["GET"],
+    tags=["marge-alias"],
+)
+app.add_api_route(
+    "/streaming/account/{account}/full",
+    account_full,
+    methods=["GET"],
+    tags=["marge-alias"],
+)
+app.add_api_route(
+    "/streaming/support/power_on", power_on, methods=["POST"], tags=["marge-alias"]
+)
+app.add_api_route(
+    "/streaming/device/{device}/streaming_token",
+    streaming_token,
+    methods=["GET"],
+    tags=["marge-alias"],
+)
+app.add_api_route(
+    "/streaming/account/{account}/device/{device}/presets",
+    account_presets,
+    methods=["GET"],
+    tags=["marge-alias"],
+)
+app.add_api_route(
+    "/streaming/account/{account}/device/{device}/preset/{preset_number}",
+    put_account_preset,
+    methods=["PUT"],
+    tags=["marge-alias"],
+)
+app.add_api_route(
+    "/streaming/account/{account}/device/{device}/recents",
+    account_recents,
+    methods=["GET"],
+    tags=["marge-alias"],
+)
+app.add_api_route(
+    "/streaming/account/{account}/provider_settings",
+    account_provider_settings,
+    methods=["GET"],
+    tags=["marge-alias"],
+)
+app.add_api_route(
+    "/streaming/software/update/account/{account}",
+    software_update,
+    methods=["GET"],
+    tags=["marge-alias"],
+)
+app.add_api_route(
+    "/streaming/account/{account}/device/{device}/recent",
+    post_account_recent,
+    methods=["POST"],
+    tags=["marge-alias"],
+)
+app.add_api_route(
+    "/streaming/account/{account}/device/",
+    post_account_device,
+    methods=["POST"],
+    tags=["marge-alias"],
+)
+app.add_api_route(
+    "/streaming/account/{account}/device/{device}",
+    delete_account_device,
+    methods=["DELETE"],
+    tags=["marge-alias"],
+)
+app.add_api_route(
+    "/streaming/support/customersupport",
+    customer_support_upload,
+    methods=["POST"],
+    tags=["marge-alias"],
+)
+app.add_api_route(
+    "/streaming/device_setting/account/{account}/device/{device}/device_settings",
+    get_device_settings,
+    methods=["GET"],
+    tags=["marge-alias"],
+)
+app.add_api_route(
+    "/streaming/device_setting/account/{account}/device/{device}/device_settings",
+    update_device_settings,
+    methods=["POST"],
+    tags=["marge-alias"],
+)
+app.add_api_route(
+    "/streaming/account/{account}/emailaddress",
+    get_email_address,
+    methods=["GET"],
+    tags=["marge-alias"],
+)
+
+# --- Customer root-level aliases (already at /customer/..., no prefix to strip) ---
+# These are already at root level, no aliases needed.
 
 
 ################## configuration ############3
