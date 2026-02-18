@@ -105,31 +105,25 @@ app.add_middleware(ProxyMiddleware)
 
 
 @app.middleware("http")
-async def log_request_body(request: Request, call_next):
-    """Log incoming requests — controlled by LOG_REQUEST_BODY / LOG_REQUEST_HEADERS env vars."""
+async def log_unknown_requests(request: Request, call_next):
+    """Log unknown endpoints (404s) for API research.
+
+    When LOG_REQUEST_BODY / LOG_REQUEST_HEADERS are enabled, body and
+    headers are included in the log line — but only for 404s.  Known
+    endpoints are not logged here (they have their own logging).
+    """
     body = b""
     if settings.log_request_body or settings.log_request_headers:
         body = await request.body()
 
     response = await call_next(request)
 
-    # Always log 404s (unknown endpoints) at INFO for observability
     if response.status_code == 404:
         query = str(request.url.query)
         query_str = f"?{query}" if query else ""
-        logger.info(
-            "UNKNOWN %s %s%s [404]",
-            request.method,
-            request.url.path,
-            query_str,
-        )
-    elif settings.log_request_body and body:
-        method = request.method
-        path = request.url.path
-        query = str(request.url.query)
-        query_str = f"?{query}" if query else ""
-        content_type = request.headers.get("content-type", "")
-        body_preview = body[:2000].decode("utf-8", errors="replace")
+        body_str = ""
+        if settings.log_request_body and body:
+            body_str = " body=" + body[:2000].decode("utf-8", errors="replace")
         headers_str = ""
         if settings.log_request_headers:
             headers_str = (
@@ -142,14 +136,12 @@ async def log_request_body(request: Request, call_next):
                 + "}"
             )
         logger.info(
-            "REQUEST %s %s%s [%d] content-type=%s%s body=%s",
-            method,
-            path,
+            "UNKNOWN %s %s%s [404]%s%s",
+            request.method,
+            request.url.path,
             query_str,
-            response.status_code,
-            content_type,
             headers_str,
-            body_preview,
+            body_str,
         )
 
     return response
