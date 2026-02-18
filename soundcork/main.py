@@ -105,6 +105,34 @@ app.add_middleware(ProxyMiddleware)
 
 
 @app.middleware("http")
+async def log_request_body(request: Request, call_next):
+    """Log all incoming requests with their body for API research."""
+    body = await request.body()
+    method = request.method
+    path = request.url.path
+    query = str(request.url.query)
+    content_type = request.headers.get("content-type", "")
+
+    response = await call_next(request)
+
+    # Log all non-GET requests with a body, and all 404s
+    if body or response.status_code == 404:
+        body_preview = body[:2000].decode("utf-8", errors="replace") if body else ""
+        query_str = f"?{query}" if query else ""
+        logger.info(
+            "REQUEST %s %s%s [%d] content-type=%s body=%s",
+            method,
+            path,
+            query_str,
+            response.status_code,
+            content_type,
+            body_preview,
+        )
+
+    return response
+
+
+@app.middleware("http")
 async def register_speakers_middleware(request: Request, call_next):
     """Capture account/device IDs from marge URLs for the Spotify primer."""
     response = await call_next(request)
