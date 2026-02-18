@@ -27,6 +27,10 @@ class Settings(BaseSettings):
     mgmt_username: str = "admin"
     mgmt_password: str = "change_me!"
 
+    # Debug logging for API research
+    log_request_body: bool = False
+    log_request_headers: bool = False
+
     # Spotify OAuth
     spotify_client_id: str = ""
     spotify_client_secret: str = ""
