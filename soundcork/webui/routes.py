@@ -1,7 +1,9 @@
+import asyncio
 import logging
 import os
 
 import httpx
+import websockets
 from fastapi import APIRouter, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 
@@ -93,3 +95,51 @@ async def proxy_tunein(path: str, request: Request):
     except (httpx.ConnectError, httpx.TimeoutException) as e:
         logger.warning(f"TuneIn proxy error: {e}")
         return Response(content="TuneIn unreachable", status_code=502)
+
+
+# --- WebSocket Proxy ---
+# Relays WebSocket connections between the browser and speaker port 8080.
+# The speaker sends real-time XML updates for volume, now-playing, and zones.
+
+SPEAKER_WS_PORT = 8080
+
+
+@router.websocket("/ws/speaker/{ip}")
+async def proxy_speaker_websocket(websocket: WebSocket, ip: str):
+    """Proxy WebSocket connections to a speaker for real-time updates."""
+    await websocket.accept(subprotocol="gabbo")
+    speaker_uri = f"ws://{ip}:{SPEAKER_WS_PORT}"
+    try:
+        async with websockets.connect(
+            speaker_uri, subprotocols=["gabbo"]
+        ) as speaker_ws:
+
+            async def browser_to_speaker():
+                try:
+                    while True:
+                        data = await websocket.receive_text()
+                        await speaker_ws.send(data)
+                except WebSocketDisconnect:
+                    pass
+
+            async def speaker_to_browser():
+                try:
+                    async for message in speaker_ws:
+                        await websocket.send_text(message)
+                except websockets.ConnectionClosed:
+                    pass
+
+            # Run both directions concurrently
+            await asyncio.gather(
+                browser_to_speaker(),
+                speaker_to_browser(),
+            )
+    except (ConnectionRefusedError, OSError, websockets.InvalidURI) as e:
+        logger.warning(f"WebSocket proxy to {ip}: {e}")
+        await websocket.close(code=1011, reason=f"Speaker unreachable: {e}")
+    except Exception as e:
+        logger.error(f"WebSocket proxy error for {ip}: {e}")
+        try:
+            await websocket.close(code=1011, reason="Internal error")
+        except Exception:
+            pass
