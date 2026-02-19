@@ -1,11 +1,14 @@
 import asyncio
+import json
 import logging
 import os
 
 import httpx
 import websockets
 from fastapi import APIRouter, Request, Response, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
+
+from soundcork.config import Settings
 
 logger = logging.getLogger(__name__)
 
@@ -15,11 +18,200 @@ STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
 SPEAKER_PORT = 8090
 SPEAKER_TIMEOUT = 10.0
 
+# Server-side settings (loaded once at import time, same instance as main app)
+_settings = Settings()
+
+
+# --- Speaker Storage ---
+# Speakers are persisted server-side in a JSON file so they survive browser clears
+# and are shared across all clients.
+
+
+def _speakers_file() -> str:
+    return os.path.join(_settings.data_dir, "webui_speakers.json")
+
+
+def _load_speakers() -> list[dict]:
+    path = _speakers_file()
+    if not os.path.isfile(path):
+        return []
+    try:
+        with open(path, "r") as f:
+            return json.load(f)
+    except (json.JSONDecodeError, OSError):
+        logger.warning("Failed to read webui speakers file: %s", path)
+        return []
+
+
+def _save_speakers(speakers: list[dict]) -> None:
+    path = _speakers_file()
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as f:
+        json.dump(speakers, f, indent=2)
+
+
+# --- Static File Serving ---
+
 
 @router.get("/")
 async def webui_index():
     """Serve the web UI single-page application."""
     return FileResponse(os.path.join(STATIC_DIR, "index.html"))
+
+
+# --- Server Config (exposed to the UI, no secrets) ---
+
+
+@router.get("/api/config")
+async def webui_config():
+    """Return server configuration that the UI needs (no credentials)."""
+    return {
+        "baseUrl": _settings.base_url,
+        "hasSpotify": bool(_settings.spotify_client_id),
+    }
+
+
+# --- Server-Side Speaker CRUD ---
+
+
+@router.get("/api/speakers")
+async def list_webui_speakers():
+    """Return the saved speaker list."""
+    return _load_speakers()
+
+
+@router.post("/api/speakers")
+async def add_webui_speaker(request: Request):
+    """Add a speaker to the saved list."""
+    speaker = await request.json()
+    speakers = _load_speakers()
+    # Deduplicate by ipAddress
+    if any(s["ipAddress"] == speaker["ipAddress"] for s in speakers):
+        return JSONResponse({"detail": "Speaker already exists"}, status_code=409)
+    speakers.append(speaker)
+    _save_speakers(speakers)
+    return speaker
+
+
+@router.put("/api/speakers/{ip}")
+async def update_webui_speaker(ip: str, request: Request):
+    """Update a speaker in the saved list."""
+    updates = await request.json()
+    speakers = _load_speakers()
+    for s in speakers:
+        if s["ipAddress"] == ip:
+            s.update(updates)
+            _save_speakers(speakers)
+            return s
+    return JSONResponse({"detail": "Speaker not found"}, status_code=404)
+
+
+@router.delete("/api/speakers/{ip}")
+async def delete_webui_speaker(ip: str):
+    """Remove a speaker from the saved list."""
+    speakers = _load_speakers()
+    new_speakers = [s for s in speakers if s["ipAddress"] != ip]
+    if len(new_speakers) == len(speakers):
+        return JSONResponse({"detail": "Speaker not found"}, status_code=404)
+    _save_speakers(new_speakers)
+    return {"ok": True}
+
+
+# --- Discover speakers from all accounts in the datastore ---
+
+
+@router.get("/api/discover-speakers")
+async def discover_speakers():
+    """Discover speakers from all accounts in the soundcork datastore."""
+    from soundcork.datastore import DataStore
+
+    ds = DataStore()
+    all_speakers = []
+    try:
+        for account_id in ds.list_accounts():
+            if not account_id:
+                continue
+            try:
+                for device_id in ds.list_devices(account_id):
+                    if not device_id:
+                        continue
+                    try:
+                        info = ds.get_device_info(account_id, device_id)
+                        all_speakers.append(
+                            {
+                                "ipAddress": info.ip_address,
+                                "name": info.name,
+                                "deviceId": info.device_id,
+                                "type": info.product_code,
+                                "accountId": account_id,
+                            }
+                        )
+                    except Exception:
+                        continue
+            except Exception:
+                continue
+    except Exception as e:
+        logger.warning(f"Failed to discover speakers: {e}")
+    return {"speakers": all_speakers}
+
+
+# --- Management API Proxy ---
+# The UI calls these instead of calling /mgmt/* directly.
+# This way the browser never needs to know the mgmt credentials.
+
+
+@router.get("/api/mgmt/{path:path}")
+async def proxy_mgmt_get(path: str, request: Request):
+    """Proxy GET requests to the management API with server-side auth."""
+    params = dict(request.query_params)
+    base = _settings.base_url or f"http://localhost:8000"
+    auth = httpx.BasicAuth(_settings.mgmt_username, _settings.mgmt_password)
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(
+                f"{base}/mgmt/{path}",
+                params=params,
+                auth=auth,
+                timeout=SPEAKER_TIMEOUT,
+            )
+        return Response(
+            content=resp.content,
+            status_code=resp.status_code,
+            headers={
+                "Content-Type": resp.headers.get("content-type", "application/json")
+            },
+        )
+    except (httpx.ConnectError, httpx.TimeoutException) as e:
+        logger.warning(f"Mgmt proxy error: {e}")
+        return Response(content="Management API unreachable", status_code=502)
+
+
+@router.post("/api/mgmt/{path:path}")
+async def proxy_mgmt_post(path: str, request: Request):
+    """Proxy POST requests to the management API with server-side auth."""
+    body = await request.body()
+    content_type = request.headers.get("content-type", "application/json")
+    base = _settings.base_url or f"http://localhost:8000"
+    auth = httpx.BasicAuth(_settings.mgmt_username, _settings.mgmt_password)
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(
+                f"{base}/mgmt/{path}",
+                content=body,
+                headers={"Content-Type": content_type},
+                auth=auth,
+                timeout=SPEAKER_TIMEOUT,
+            )
+        return Response(
+            content=resp.content,
+            status_code=resp.status_code,
+            headers={
+                "Content-Type": resp.headers.get("content-type", "application/json")
+            },
+        )
+    except (httpx.ConnectError, httpx.TimeoutException) as e:
+        logger.warning(f"Mgmt proxy error: {e}")
+        return Response(content="Management API unreachable", status_code=502)
 
 
 # --- Speaker Proxy API ---

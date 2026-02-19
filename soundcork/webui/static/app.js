@@ -8,36 +8,63 @@
 // ===================================================================
 
 const state = {
-  speakers: JSON.parse(localStorage.getItem('sc_speakers') || '[]'),
-  config: JSON.parse(localStorage.getItem('sc_config') || '{"apiUrl":"","accountId":"","mgmtUsername":"admin","mgmtPassword":"change_me!"}'),
+  speakers: [],       // loaded from server
+  config: {},         // loaded from server (baseUrl, hasSpotify)
   // Runtime state (not persisted)
   nowPlaying: {},
   volumes: {},
   websockets: {},
   pollTimer: null,
+  _ready: false,
 
-  save() {
-    localStorage.setItem('sc_speakers', JSON.stringify(this.speakers));
-    localStorage.setItem('sc_config', JSON.stringify(this.config));
-  },
-
-  addSpeaker(speaker) {
-    if (!this.speakers.find(s => s.id === speaker.id)) {
-      this.speakers.push(speaker);
-      this.save();
+  async loadFromServer() {
+    try {
+      const [config, speakers] = await Promise.all([
+        fetch('/webui/api/config').then(r => r.json()),
+        fetch('/webui/api/speakers').then(r => r.json()),
+      ]);
+      this.config = config;
+      this.speakers = speakers;
+      this._ready = true;
+    } catch (err) {
+      console.error('Failed to load state from server:', err);
+      this._ready = true; // proceed anyway
     }
   },
 
-  removeSpeaker(id) {
-    this.speakers = this.speakers.filter(s => s.id !== id);
-    this.save();
+  async addSpeaker(speaker) {
+    try {
+      await fetch('/webui/api/speakers', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(speaker),
+      });
+      this.speakers.push(speaker);
+    } catch (err) {
+      showToast('Failed to save speaker: ' + err.message, 'error');
+    }
   },
 
-  updateSpeaker(id, updates) {
-    const idx = this.speakers.findIndex(s => s.id === id);
-    if (idx >= 0) {
-      Object.assign(this.speakers[idx], updates);
-      this.save();
+  async removeSpeaker(ip) {
+    try {
+      await fetch(`/webui/api/speakers/${ip}`, { method: 'DELETE' });
+      this.speakers = this.speakers.filter(s => s.ipAddress !== ip);
+    } catch (err) {
+      showToast('Failed to remove speaker: ' + err.message, 'error');
+    }
+  },
+
+  async updateSpeaker(ip, updates) {
+    try {
+      await fetch(`/webui/api/speakers/${ip}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(updates),
+      });
+      const idx = this.speakers.findIndex(s => s.ipAddress === ip);
+      if (idx >= 0) Object.assign(this.speakers[idx], updates);
+    } catch (err) {
+      showToast('Failed to update speaker: ' + err.message, 'error');
     }
   },
 };
@@ -65,23 +92,20 @@ const api = {
     return text ? new DOMParser().parseFromString(text, 'text/xml') : null;
   },
 
+  // Management API — proxied through the server (no browser-side auth needed)
   async mgmtGet(path) {
-    const { apiUrl, mgmtUsername, mgmtPassword } = state.config;
-    const resp = await fetch(`${apiUrl}${path}`, {
-      headers: { Authorization: 'Basic ' + btoa(`${mgmtUsername}:${mgmtPassword}`) },
-    });
+    // path should start with /mgmt/..., strip the /mgmt prefix since the proxy adds it
+    const proxyPath = path.replace(/^\/mgmt\//, '');
+    const resp = await fetch(`/webui/api/mgmt/${proxyPath}`);
     if (!resp.ok) throw new Error(`Mgmt error: ${resp.status}`);
     return resp.json();
   },
 
   async mgmtPost(path, body = {}) {
-    const { apiUrl, mgmtUsername, mgmtPassword } = state.config;
-    const resp = await fetch(`${apiUrl}${path}`, {
+    const proxyPath = path.replace(/^\/mgmt\//, '');
+    const resp = await fetch(`/webui/api/mgmt/${proxyPath}`, {
       method: 'POST',
-      headers: {
-        Authorization: 'Basic ' + btoa(`${mgmtUsername}:${mgmtPassword}`),
-        'Content-Type': 'application/json',
-      },
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     });
     if (!resp.ok) throw new Error(`Mgmt error: ${resp.status}`);
@@ -498,10 +522,10 @@ function renderSpeakerList(main) {
       card.addEventListener('click', () => navigate('#/speaker/' + card.dataset.ip));
       card.addEventListener('contextmenu', async e => {
         e.preventDefault();
-        const ok = await confirmDialog('Delete Speaker', `Remove ${card.dataset.ip} from your list?`);
+        const ip = card.dataset.ip;
+        const ok = await confirmDialog('Delete Speaker', `Remove ${ip} from your list?`);
         if (ok) {
-          const ip = card.dataset.ip;
-          state.removeSpeaker(card.dataset.id);
+          await state.removeSpeaker(ip);
           delete state.nowPlaying[ip];
           delete state.volumes[ip];
           renderCards();
@@ -587,7 +611,7 @@ function renderSpeakerList(main) {
           type: info.type || 'Unknown',
           deviceId: info.deviceId || '',
         };
-        state.addSpeaker(speaker);
+        await state.addSpeaker(speaker);
         showToast(`Added ${speaker.name}`, 'success');
         overlay.remove();
         renderCards();
@@ -602,22 +626,25 @@ function renderSpeakerList(main) {
     const form = overlay.querySelector('#add-form');
     form.innerHTML = '<div class="spinner"></div>';
     try {
-      const accountId = state.config.accountId;
-      if (!accountId) throw new Error('Configure Account ID first');
-      const speakers = await api.mgmtGet(`/mgmt/accounts/${accountId}/speakers`);
-      if (!speakers || speakers.length === 0) {
-        form.innerHTML = '<p class="text-muted">No speakers found for this account.</p>';
+      // Use the server's discover endpoint which reads all accounts from the datastore
+      const resp = await fetch('/webui/api/discover-speakers');
+      if (!resp.ok) throw new Error('Failed to discover speakers');
+      const data = await resp.json();
+      const discovered = data.speakers || [];
+
+      if (discovered.length === 0) {
+        form.innerHTML = '<p class="text-muted">No speakers found in the datastore. Try adding by IP.</p>';
         return;
       }
       let added = 0;
-      for (const sp of speakers) {
-        const ip = sp.ip || sp.ipAddress;
+      for (const sp of discovered) {
+        const ip = sp.ipAddress;
         if (!ip) continue;
         if (state.speakers.find(s => s.ipAddress === ip)) continue;
         try {
           const xml = await api.speakerGet(ip, 'info');
           const info = parseInfo(xml);
-          state.addSpeaker({
+          await state.addSpeaker({
             id: info.deviceId || ip,
             name: info.name || ip,
             emoji: '🔊',
@@ -716,7 +743,7 @@ function renderSpeakerDetail(main, ip) {
       } else if (action === 'delete') {
         const ok = await confirmDialog('Delete Speaker', `Remove ${speaker.name}?`);
         if (ok) {
-          state.removeSpeaker(speaker.id);
+          await state.removeSpeaker(ip);
           navigate('#/speakers');
         }
       }
@@ -746,7 +773,7 @@ function renderSpeakerDetail(main, ip) {
     overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
     overlay.querySelector('#edit-save').addEventListener('click', async () => {
       newName = overlay.querySelector('#edit-name').value.trim() || spk.name;
-      state.updateSpeaker(spk.id, { emoji: selectedEmoji, name: newName });
+      await state.updateSpeaker(ip, { emoji: selectedEmoji, name: newName });
       // Also try renaming on speaker itself
       try {
         await api.speakerPost(ip, 'name', `<name>${escapeXml(newName)}</name>`);
@@ -1362,9 +1389,9 @@ function renderEditInternetRadioPreset(main, ip, presetId) {
     if (!name) { showToast('Station name is required', 'error'); return; }
     if (!streamUrl) { showToast('Stream URL is required', 'error'); return; }
 
-    const apiUrl = state.config.apiUrl;
+    const baseUrl = state.config.baseUrl || window.location.origin;
     const dataPayload = btoa(JSON.stringify({ name, imageUrl: containerArt, streamUrl }));
-    const location = `${apiUrl}/core02/svc-bmx-adapter-orion/prod/orion/station?data=${dataPayload}`;
+    const location = `${baseUrl}/core02/svc-bmx-adapter-orion/prod/orion/station?data=${dataPayload}`;
 
     const xmlBody = `<preset id="${presetId}"><ContentItem source="LOCAL_INTERNET_RADIO" type="stationurl" location="${escapeXml(location)}" isPresetable="true"><itemName>${escapeXml(name)}</itemName><containerArt>${escapeXml(containerArt)}</containerArt></ContentItem></preset>`;
     try {
@@ -1675,14 +1702,7 @@ function renderSpotifyAccounts(main) {
     <h1>Spotify Accounts</h1>
     <div id="spotify-content"><div class="spinner"></div></div>`;
 
-  if (!state.config.apiUrl) {
-    main.querySelector('#spotify-content').innerHTML = `
-      <div class="empty-state">
-        <div class="empty-state-icon">&#x26A0;</div>
-        <p>Configure the API URL first in the Config tab.</p>
-      </div>`;
-    return;
-  }
+  // Config is loaded from server — no client-side check needed
 
   (async () => {
     try {
@@ -1719,8 +1739,9 @@ function renderSpotifyAccounts(main) {
       fab.innerHTML = '+';
       fab.title = 'Add Spotify Account';
       fab.addEventListener('click', () => {
-        const url = `${state.config.apiUrl}/mgmt/spotify/init`;
-        window.open(url, '_blank');
+        // Use the server's base URL for the Spotify OAuth flow
+        const baseUrl = state.config.baseUrl || window.location.origin;
+        window.open(`${baseUrl}/mgmt/spotify/init`, '_blank');
         showToast('Complete login in the new tab, then refresh', 'info');
       });
       main.appendChild(fab);
@@ -1810,47 +1831,24 @@ function renderConfig(main) {
   main.innerHTML = `
     <h1>Configuration</h1>
     <div class="card">
-      <div class="form-group">
-        <label>API URL</label>
-        <input id="cfg-api-url" type="url" placeholder="https://soundcork.example.com" value="${escapeHtml(cfg.apiUrl)}">
-      </div>
-      <div class="form-group">
-        <label>Account ID</label>
-        <input id="cfg-account-id" type="text" placeholder="Account UUID" value="${escapeHtml(cfg.accountId)}">
-      </div>
-      <div class="form-group">
-        <label>Management Username</label>
-        <input id="cfg-username" type="text" value="${escapeHtml(cfg.mgmtUsername)}">
-      </div>
-      <div class="form-group">
-        <label>Management Password</label>
-        <div class="password-wrapper">
-          <input id="cfg-password" type="password" value="${escapeHtml(cfg.mgmtPassword)}">
-          <button class="password-toggle" id="toggle-password" type="button">&#x1F441;</button>
-        </div>
-      </div>
-      <button class="btn btn-primary" id="cfg-save">Save Configuration</button>
+      <p class="text-muted text-sm mb-2">Server configuration is managed via environment variables. These values are read-only.</p>
+      <div class="detail-row"><span class="detail-row-label">Server URL</span><span class="detail-row-value mono">${escapeHtml(cfg.baseUrl || window.location.origin)}</span></div>
+      <div class="detail-row"><span class="detail-row-label">Spotify</span><span class="detail-row-value">${cfg.hasSpotify ? '<span class="badge badge-spotify">Connected</span>' : '<span class="badge">Not configured</span>'}</span></div>
+      <div class="detail-row"><span class="detail-row-label">Speakers</span><span class="detail-row-value">${state.speakers.length} saved</span></div>
+    </div>
+    <div class="card mt-2">
+      <h3>About</h3>
+      <p class="text-sm text-muted">SoundCork Web UI — a web interface for controlling Bose SoundTouch speakers after Bose's cloud shutdown.</p>
+      <p class="text-sm text-muted mt-1">Speakers and configuration are stored server-side. No browser data needed.</p>
     </div>`;
-
-  main.querySelector('#toggle-password').addEventListener('click', () => {
-    const input = main.querySelector('#cfg-password');
-    input.type = input.type === 'password' ? 'text' : 'password';
-  });
-
-  main.querySelector('#cfg-save').addEventListener('click', () => {
-    state.config.apiUrl = main.querySelector('#cfg-api-url').value.trim().replace(/\/$/, '');
-    state.config.accountId = main.querySelector('#cfg-account-id').value.trim();
-    state.config.mgmtUsername = main.querySelector('#cfg-username').value.trim();
-    state.config.mgmtPassword = main.querySelector('#cfg-password').value;
-    state.save();
-    showToast('Configuration saved', 'success');
-  });
 }
 
 // ===================================================================
 // Section 8: App Initialization
 // ===================================================================
 
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
+  // Load config and speakers from the server before rendering
+  await state.loadFromServer();
   handleRoute();
 });
