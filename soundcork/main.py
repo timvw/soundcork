@@ -529,26 +529,21 @@ def oauth_token_refresh(device_id: str, provider_id: str, token_type: str):
 def streaming_token(device: str, request: Request):
     """Streaming token endpoint.
 
-    The speaker calls this at boot.  The original Bose server returned
-    a Bose-internal token in the Authorization response header (empty
-    body, ~128-char token starting with "TYck..." or similar).
-
-    We do NOT have the ability to mint these tokens ourselves.  In proxy
-    mode, the ProxyMiddleware will forward this to the real Bose server
-    (which still returns valid tokens as of Feb 2026).  In local mode,
-    we return 404 — the speaker tolerates this and still plays Spotify
-    using the refresh token from the /full account response.
-
-    IMPORTANT: Do NOT return a Spotify Web API access token here.  The
-    speaker's firmware expects a Bose streaming token, not a Spotify
-    OAuth token.  Returning the wrong token type causes playback to fail.
+    Returns a local bearer token matching the gesellix/Bose-SoundTouch
+    Go implementation's st-local-token-{timestamp} pattern. The speaker
+    accepts this for local operation.
     """
-    logger.info(
-        "streaming_token request for device %s (returning 404 — "
-        "no local token available; use proxy mode to forward to Bose)",
-        device,
+    token_value = f"st-local-token-{int(datetime.now().timestamp())}"
+    bearer = f"Bearer {token_value}"
+    logger.info("streaming_token request for device %s (returning local token)", device)
+    xml_str = f'<?xml version="1.0" encoding="UTF-8"?><bearertoken value="{bearer}"/>'
+    response = Response(
+        content=xml_str,
+        status_code=200,
+        media_type="application/vnd.bose.streaming-v1.2+xml",
     )
-    return Response(content="", status_code=404)
+    response.headers["Authorization"] = bearer
+    return response
 
 
 @app.get("/marge/streaming/sourceproviders", tags=["marge"])
