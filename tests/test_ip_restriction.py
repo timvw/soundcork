@@ -50,6 +50,27 @@ def client(allowlist):
         main_mod._speaker_allowlist = original
 
 
+def _login(client) -> str:
+    """Login to webui and return CSRF token. Modifies client cookies in-place."""
+    with patch("soundcork.webui.auth.Settings") as MockSettings:
+        MockSettings.return_value.mgmt_username = "admin"
+        MockSettings.return_value.mgmt_password = "secret"
+        resp = client.post(
+            "/webui/api/login",
+            json={"username": "admin", "password": "secret"},
+        )
+        assert resp.status_code == 200, f"Login failed: {resp.text}"
+        return resp.json()["csrf_token"]
+
+
+@pytest.fixture
+def authed_client(client):
+    """Test client with an active webui session."""
+    csrf = _login(client)
+    client._csrf_token = csrf
+    return client
+
+
 class TestBoseProtocolIPRestriction:
     """Bose protocol endpoints should only accept requests from known speaker IPs."""
 
@@ -83,14 +104,18 @@ class TestBoseProtocolIPRestriction:
         )
         assert resp.status_code == 403
 
-    def test_webui_not_blocked(self, client):
-        """WebUI endpoints should NOT be restricted by speaker IP."""
+    def test_webui_not_blocked_by_ip(self, client):
+        """WebUI endpoints should NOT be restricted by speaker IP.
+
+        Without a session, the auth middleware redirects to login (302).
+        The point is: it's NOT a 403 from the IP restriction middleware.
+        """
         resp = client.get(
             "/webui/",
             headers={"X-Forwarded-For": "10.99.99.99"},
+            follow_redirects=False,
         )
-        # Should serve the page regardless of source IP
-        assert resp.status_code == 200
+        assert resp.status_code != 403
 
     def test_mgmt_not_blocked_by_ip(self, client):
         """Mgmt endpoints use their own Basic Auth, not IP restriction."""
@@ -110,67 +135,71 @@ class TestBoseProtocolIPRestriction:
 
 
 class TestWebuiSpeakerProxyRestriction:
-    """The webui speaker proxy should only allow proxying to registered speaker IPs."""
+    """The webui speaker proxy should only allow proxying to registered speaker IPs.
 
-    def test_speaker_proxy_allowed_for_registered_ip(self, client):
+    These tests use authed_client (logged-in session) to bypass the auth
+    middleware and test the SSRF restrictions in the endpoint itself.
+    """
+
+    def test_speaker_proxy_allowed_for_registered_ip(self, authed_client):
         # This will fail to connect to the speaker (no real speaker), but shouldn't be 403
-        resp = client.get("/webui/api/speaker/192.168.1.143/info")
+        resp = authed_client.get("/webui/api/speaker/192.168.1.143/info")
         assert resp.status_code != 403
 
-    def test_speaker_proxy_blocked_for_unregistered_ip(self, client):
-        resp = client.get("/webui/api/speaker/10.99.99.99/info")
+    def test_speaker_proxy_blocked_for_unregistered_ip(self, authed_client):
+        resp = authed_client.get("/webui/api/speaker/10.99.99.99/info")
         assert resp.status_code == 403
 
-    def test_speaker_proxy_blocks_metadata_ip(self, client):
-        resp = client.get("/webui/api/speaker/169.254.169.254/latest/meta-data/")
+    def test_speaker_proxy_blocks_metadata_ip(self, authed_client):
+        resp = authed_client.get("/webui/api/speaker/169.254.169.254/latest/meta-data/")
         assert resp.status_code == 403
 
-    def test_speaker_proxy_blocks_loopback(self, client):
-        resp = client.get("/webui/api/speaker/127.0.0.1/etc/passwd")
+    def test_speaker_proxy_blocks_loopback(self, authed_client):
+        resp = authed_client.get("/webui/api/speaker/127.0.0.1/etc/passwd")
         assert resp.status_code == 403
 
 
 class TestWebuiImageProxyRestriction:
     """The image proxy should only allow known CDN domains."""
 
-    def test_image_proxy_allows_tunein_cdn(self, client):
-        resp = client.get(
+    def test_image_proxy_allows_tunein_cdn(self, authed_client):
+        resp = authed_client.get(
             "/webui/api/image",
             params={"url": "https://cdn-profiles.tunein.com/s2398/images/logoq.jpg"},
         )
         # May fail to connect, but shouldn't be 403
         assert resp.status_code != 403
 
-    def test_image_proxy_allows_spotify_cdn(self, client):
-        resp = client.get(
+    def test_image_proxy_allows_spotify_cdn(self, authed_client):
+        resp = authed_client.get(
             "/webui/api/image",
             params={"url": "https://image-cdn-ak.spotifycdn.com/image/abc123"},
         )
         assert resp.status_code != 403
 
-    def test_image_proxy_allows_scdn(self, client):
-        resp = client.get(
+    def test_image_proxy_allows_scdn(self, authed_client):
+        resp = authed_client.get(
             "/webui/api/image",
             params={"url": "https://i.scdn.co/image/abc123"},
         )
         assert resp.status_code != 403
 
-    def test_image_proxy_blocks_arbitrary_url(self, client):
-        resp = client.get(
+    def test_image_proxy_blocks_arbitrary_url(self, authed_client):
+        resp = authed_client.get(
             "/webui/api/image",
             params={"url": "https://evil.com/steal-data"},
         )
         assert resp.status_code == 403
 
-    def test_image_proxy_blocks_internal_ip(self, client):
-        resp = client.get(
+    def test_image_proxy_blocks_internal_ip(self, authed_client):
+        resp = authed_client.get(
             "/webui/api/image",
             params={"url": "http://169.254.169.254/latest/meta-data/"},
         )
         assert resp.status_code == 403
 
-    def test_image_proxy_blocks_localhost(self, client):
-        resp = client.get(
+    def test_image_proxy_blocks_localhost(self, authed_client):
+        resp = authed_client.get(
             "/webui/api/image",
             params={"url": "http://127.0.0.1:8000/mgmt/spotify/token"},
         )
@@ -180,32 +209,34 @@ class TestWebuiImageProxyRestriction:
 class TestWebuiMgmtProxyRestriction:
     """The mgmt proxy should only allow specific safe paths."""
 
-    def test_mgmt_proxy_allows_spotify_accounts(self, client):
-        resp = client.get("/webui/api/mgmt/spotify/accounts")
+    def test_mgmt_proxy_allows_spotify_accounts(self, authed_client):
+        resp = authed_client.get("/webui/api/mgmt/spotify/accounts")
         # May get a connection error to the backend, but not 403
         assert resp.status_code != 403
 
-    def test_mgmt_proxy_allows_spotify_entity(self, client):
-        resp = client.post(
+    def test_mgmt_proxy_allows_spotify_entity(self, authed_client):
+        csrf = authed_client._csrf_token
+        resp = authed_client.post(
             "/webui/api/mgmt/spotify/entity",
             json={"uri": "spotify:playlist:abc"},
+            headers={"X-CSRF-Token": csrf},
         )
         assert resp.status_code != 403
 
-    def test_mgmt_proxy_blocks_spotify_token(self, client):
+    def test_mgmt_proxy_blocks_spotify_token(self, authed_client):
         """The token endpoint must NOT be exposed through the proxy."""
-        resp = client.get("/webui/api/mgmt/spotify/token")
+        resp = authed_client.get("/webui/api/mgmt/spotify/token")
         assert resp.status_code == 403
 
-    def test_mgmt_proxy_blocks_arbitrary_path(self, client):
+    def test_mgmt_proxy_blocks_arbitrary_path(self, authed_client):
         # Path traversal: FastAPI normalizes ../.. to 404, or our check returns 403
-        resp = client.get("/webui/api/mgmt/../../etc/passwd")
+        resp = authed_client.get("/webui/api/mgmt/../../etc/passwd")
         assert resp.status_code in (403, 404)
 
-    def test_mgmt_proxy_blocks_token_path(self, client):
-        resp = client.get("/webui/api/mgmt/spotify/token")
+    def test_mgmt_proxy_blocks_token_path(self, authed_client):
+        resp = authed_client.get("/webui/api/mgmt/spotify/token")
         assert resp.status_code == 403
 
-    def test_mgmt_proxy_blocks_unknown_subpath(self, client):
-        resp = client.get("/webui/api/mgmt/devices/AABB/events")
+    def test_mgmt_proxy_blocks_unknown_subpath(self, authed_client):
+        resp = authed_client.get("/webui/api/mgmt/devices/AABB/events")
         assert resp.status_code == 403

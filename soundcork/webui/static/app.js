@@ -4,6 +4,40 @@
    =================================================================== */
 
 // ===================================================================
+// Section 0: Auth-aware Fetch Wrapper
+// ===================================================================
+
+/**
+ * Wrapper around fetch() that:
+ * 1. Adds X-CSRF-Token header to mutating requests (POST/PUT/DELETE/PATCH)
+ * 2. Redirects to /webui/login on 401 responses
+ */
+const _originalFetch = window.fetch;
+window.fetch = async function(url, options = {}) {
+  const method = (options.method || 'GET').toUpperCase();
+  if (['POST', 'PUT', 'DELETE', 'PATCH'].includes(method)) {
+    const csrfToken = sessionStorage.getItem('csrf_token');
+    if (csrfToken) {
+      options.headers = options.headers || {};
+      if (options.headers instanceof Headers) {
+        options.headers.set('X-CSRF-Token', csrfToken);
+      } else {
+        options.headers['X-CSRF-Token'] = csrfToken;
+      }
+    }
+  }
+  const resp = await _originalFetch.call(window, url, options);
+  if (resp.status === 401 && typeof url === 'string' && url.startsWith('/webui/')) {
+    // Don't redirect if we're on the login page already
+    if (!window.location.pathname.startsWith('/webui/login')) {
+      sessionStorage.removeItem('csrf_token');
+      window.location.href = '/webui/login';
+    }
+  }
+  return resp;
+};
+
+// ===================================================================
 // Section 1: State Management
 // ===================================================================
 
@@ -1888,6 +1922,19 @@ function renderConfig(main) {
 // ===================================================================
 
 document.addEventListener('DOMContentLoaded', async () => {
+  // Logout button handler
+  const logoutBtn = document.getElementById('logout-btn');
+  if (logoutBtn) {
+    logoutBtn.addEventListener('click', async (e) => {
+      e.preventDefault();
+      try {
+        await fetch('/webui/api/logout', { method: 'POST' });
+      } catch { /* ignore */ }
+      sessionStorage.removeItem('csrf_token');
+      window.location.href = '/webui/login';
+    });
+  }
+
   // Load config and speakers from the server before rendering
   await state.loadFromServer();
 

@@ -11,6 +11,7 @@ from fastapi import APIRouter, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse
 
 from soundcork.config import Settings
+from soundcork.webui.auth import SessionStore, verify_login
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +23,10 @@ SPEAKER_TIMEOUT = 10.0
 
 # Server-side settings (loaded once at import time, same instance as main app)
 _settings = Settings()
+
+# --- Session auth ---
+_session_store = SessionStore()
+_SESSION_COOKIE = "webui_session"
 
 
 # --- Security helpers ---
@@ -128,6 +133,51 @@ def _save_speakers(speakers: list[dict]) -> None:
 async def webui_index():
     """Serve the web UI single-page application."""
     return FileResponse(os.path.join(STATIC_DIR, "index.html"))
+
+
+# --- Authentication Endpoints ---
+
+
+@router.get("/login")
+async def webui_login_page():
+    """Serve the login page."""
+    return FileResponse(os.path.join(STATIC_DIR, "login.html"))
+
+
+@router.post("/api/login")
+async def webui_login(request: Request):
+    """Authenticate and create a session."""
+    try:
+        body = await request.json()
+        username = body.get("username", "")
+        password = body.get("password", "")
+    except Exception:
+        return JSONResponse({"detail": "Invalid request"}, status_code=401)
+
+    if not verify_login(username, password):
+        return JSONResponse({"detail": "Invalid credentials"}, status_code=401)
+
+    session_id, csrf_token = _session_store.create()
+    response = JSONResponse({"csrf_token": csrf_token})
+    response.set_cookie(
+        key=_SESSION_COOKIE,
+        value=session_id,
+        httponly=True,
+        samesite="lax",
+        path="/webui",
+        secure=request.url.scheme == "https",
+    )
+    return response
+
+
+@router.post("/api/logout")
+async def webui_logout(request: Request):
+    """Destroy the session and clear the cookie."""
+    session_id = request.cookies.get(_SESSION_COOKIE, "")
+    _session_store.destroy(session_id)
+    response = JSONResponse({"ok": True})
+    response.delete_cookie(key=_SESSION_COOKIE, path="/webui")
+    return response
 
 
 # --- Server Config (exposed to the UI, no secrets) ---

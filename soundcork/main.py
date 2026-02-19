@@ -1,5 +1,6 @@
 import logging
 import os
+import secrets as _secrets_mod
 import xml.etree.ElementTree as ET
 from contextlib import asynccontextmanager
 from datetime import datetime
@@ -7,7 +8,7 @@ from http import HTTPStatus
 from typing import Annotated
 
 from fastapi import Depends, FastAPI, HTTPException, Path, Request, Response
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.responses import FileResponse
 from fastapi_etag import Etag
 
@@ -204,6 +205,45 @@ async def speaker_ip_restriction(request: Request, call_next):
             {"detail": "Forbidden: unknown speaker IP"},
             status_code=403,
         )
+
+    return await call_next(request)
+
+
+# --- WebUI session auth middleware ---
+# All /webui/* paths (except login page and static assets) require a session cookie.
+from soundcork.webui.auth import is_webui_path_public
+from soundcork.webui.routes import _session_store, _SESSION_COOKIE
+
+
+@app.middleware("http")
+async def webui_auth(request: Request, call_next):
+    """Require session auth for all webui endpoints."""
+    path = request.url.path
+
+    # Only apply to /webui paths
+    if not path.startswith("/webui"):
+        return await call_next(request)
+
+    # Public paths (login page, login endpoint, static assets)
+    if is_webui_path_public(path):
+        return await call_next(request)
+
+    # Check session cookie
+    session_id = request.cookies.get(_SESSION_COOKIE, "")
+    csrf_token = _session_store.validate(session_id)
+    if csrf_token is None:
+        # API/WS requests get 401, HTML requests get redirect to login
+        if path.startswith("/webui/api/") or path.startswith("/webui/ws/"):
+            return JSONResponse({"detail": "Authentication required"}, status_code=401)
+        return RedirectResponse(url="/webui/login", status_code=302)
+
+    # CSRF check for mutating methods
+    if request.method in ("POST", "PUT", "DELETE", "PATCH"):
+        # Login endpoint is exempt (no session yet to have a CSRF token)
+        if path != "/webui/api/login":
+            csrf_header = request.headers.get("x-csrf-token", "")
+            if not _secrets_mod.compare_digest(csrf_header, csrf_token):
+                return JSONResponse({"detail": "CSRF token invalid"}, status_code=403)
 
     return await call_next(request)
 

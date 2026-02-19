@@ -159,6 +159,14 @@ h3 {
 .nav-label {
   line-height: 1;
 }
+.nav-logout {
+  margin-left: auto;
+  opacity: 0.6;
+}
+.nav-logout:hover {
+  opacity: 1;
+  color: var(--danger);
+}
 
 #main {
   flex: 1;
@@ -191,6 +199,11 @@ h3 {
 
   .nav-item {
     padding: 0.6rem 0.5rem;
+  }
+
+  .nav-logout {
+    margin-left: 0;
+    margin-top: auto;
   }
 
   #main {
