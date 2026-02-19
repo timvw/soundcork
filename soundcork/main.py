@@ -99,6 +99,17 @@ from soundcork.mgmt import router as mgmt_router
 from soundcork.proxy import ProxyMiddleware
 
 app.include_router(mgmt_router)
+
+from soundcork.webui.routes import router as webui_router
+from fastapi.staticfiles import StaticFiles
+
+app.include_router(webui_router)
+app.mount(
+    "/webui/static",
+    StaticFiles(directory=os.path.join(os.path.dirname(__file__), "webui", "static")),
+    name="webui_static",
+)
+
 app.add_middleware(ProxyMiddleware)
 
 
