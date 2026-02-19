@@ -157,6 +157,7 @@ function parseVolume(xml) {
 
 function parseNowPlaying(xml) {
   const np = xml.querySelector('nowPlaying');
+  const ci = np?.querySelector('ContentItem');
   return {
     source: np?.getAttribute('source') || '',
     sourceAccount: np?.getAttribute('sourceAccount') || '',
@@ -165,6 +166,9 @@ function parseNowPlaying(xml) {
     album: np?.querySelector('album')?.textContent || '',
     art: np?.querySelector('art')?.textContent || '',
     artImageStatus: np?.querySelector('art')?.getAttribute('artImageStatus') || '',
+    containerArt: ci?.querySelector('containerArt')?.textContent || '',
+    itemName: ci?.querySelector('itemName')?.textContent || '',
+    location: ci?.getAttribute('location') || '',
     shuffleSetting: np?.querySelector('shuffleSetting')?.textContent || '',
     repeatSetting: np?.querySelector('repeatSetting')?.textContent || '',
     playStatus: np?.querySelector('playStatus')?.textContent || '',
@@ -334,6 +338,13 @@ function escapeXml(str) {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&apos;');
+}
+
+// Proxy external image URLs through our server to avoid browser blocking
+// (tracking protection, ad blockers, mixed-content).
+function proxyImage(url) {
+  if (!url) return '';
+  return `/webui/api/image?url=${encodeURIComponent(url)}`;
 }
 
 function decodeSpotifyUri(location) {
@@ -507,9 +518,10 @@ function renderSpeakerList(main) {
       .map(s => {
         const np = state.nowPlaying[s.ipAddress];
         const hasArt = np && np.art && np.artImageStatus === 'IMAGE_PRESENT';
+        const miniArtUrl = np && (hasArt ? np.art : np.containerArt);
         const npHtml = np && np.track
           ? `<div class="mini-np">
-              ${hasArt ? `<img class="mini-np-art" src="${escapeHtml(np.art)}" alt="">` : ''}
+              ${miniArtUrl ? `<img class="mini-np-art" src="${proxyImage(miniArtUrl)}" alt="" onerror="this.style.display='none'">` : ''}
               <div class="mini-np-text">${escapeHtml(np.track)}${np.artist ? ' — ' + escapeHtml(np.artist) : ''}</div>
             </div>`
           : '';
@@ -822,12 +834,15 @@ function renderSpeakerDetail(main, ip) {
   function renderNowPlaying(np) {
     const section = main.querySelector('#now-playing-section');
     const hasArt = np.art && np.artImageStatus === 'IMAGE_PRESENT';
+    // Use album art if available, fall back to station/container art (album CDN may be dead)
+    const artUrl = hasArt ? np.art : np.containerArt;
     const spotifyUri = np.source === 'SPOTIFY' ? decodeSpotifyUri(np.location || '') : null;
     const spotifyUrl = spotifyWebUrl(spotifyUri);
+    const fallbackSrc = np.containerArt && np.containerArt !== np.art ? proxyImage(np.containerArt) : '';
     section.innerHTML = `
       <div class="now-playing">
-        ${hasArt
-          ? `<img class="now-playing-art" src="${escapeHtml(np.art)}" alt="Album Art">`
+        ${artUrl
+          ? `<img class="now-playing-art" src="${proxyImage(artUrl)}" alt="Album Art"${fallbackSrc ? ` onerror="this.onerror=null;this.src='${fallbackSrc}'"` : ` onerror="this.style.display='none'"`}>`
           : `<div class="now-playing-placeholder"><span>${escapeHtml(speaker.emoji || '🔊')}</span><span class="text-sm">${escapeHtml(speaker.name)}</span></div>`}
         <div class="now-playing-info">
           <div class="now-playing-track">${escapeHtml(np.track || 'Nothing playing')}</div>
@@ -925,7 +940,7 @@ function renderSpeakerDetail(main, ip) {
         return `<div class="preset-card" data-preset="${p.id}">
           <span class="preset-number">${p.id}</span>
           ${p.containerArt
-            ? `<img class="preset-card-art" src="${escapeHtml(p.containerArt)}" alt="">`
+            ? `<img class="preset-card-art" src="${proxyImage(p.containerArt)}" alt="">`
             : `<div class="preset-card-placeholder">${p.id}</div>`}
           <div class="preset-card-name">${escapeHtml(p.itemName)}</div>
         </div>`;
@@ -995,7 +1010,7 @@ function renderPresets(main, ip) {
         return `<div class="preset-card" data-preset="${p.id}">
           <span class="preset-number">${p.id}</span>
           ${p.containerArt
-            ? `<img class="preset-card-art" src="${escapeHtml(p.containerArt)}" alt="">`
+            ? `<img class="preset-card-art" src="${proxyImage(p.containerArt)}" alt="">`
             : `<div class="preset-card-placeholder">${p.id}</div>`}
           <div class="preset-card-name">${escapeHtml(p.itemName)}</div>
           ${sourceBadge(p.source)}
@@ -1057,7 +1072,7 @@ function renderPresetDetail(main, ip, presetId) {
 
       container.innerHTML = `
         ${preset.containerArt
-          ? `<img class="large-art" src="${escapeHtml(preset.containerArt)}" alt="">`
+          ? `<img class="large-art" src="${proxyImage(preset.containerArt)}" alt="">`
           : `<div class="large-art flex-center" style="font-size:3rem;color:var(--text-hint)">${presetId}</div>`}
         <h2 class="text-center mb-2">${escapeHtml(preset.itemName)}</h2>
         <div class="card">
@@ -1185,10 +1200,11 @@ function renderEditSpotifyPreset(main, ip, presetId) {
       previewEl.innerHTML = '<div class="spinner"></div>';
       try {
         const entity = await api.mgmtPost('/mgmt/spotify/entity', { uri });
+        entity.image = entity.image || entity.imageUrl || '';
         entityData = entity;
         previewEl.innerHTML = `
           <div class="entity-preview">
-            ${entity.image ? `<img src="${escapeHtml(entity.image)}" alt="">` : ''}
+            ${entity.image ? `<img src="${proxyImage(entity.image)}" alt="">` : ''}
             <div class="entity-preview-name">${escapeHtml(entity.name || uri)}</div>
           </div>`;
         saveBtn.disabled = false;
@@ -1385,7 +1401,7 @@ function renderEditInternetRadioPreset(main, ip, presetId) {
   artInput.addEventListener('input', () => {
     const url = artInput.value.trim();
     if (url) {
-      previewEl.innerHTML = `<img src="${escapeHtml(url)}" alt="Preview" style="width:80px;height:80px;border-radius:var(--radius-sm);object-fit:cover" onerror="this.style.display='none'">`;
+      previewEl.innerHTML = `<img src="${proxyImage(url)}" alt="Preview" style="width:80px;height:80px;border-radius:var(--radius-sm);object-fit:cover" onerror="this.style.display='none'">`;
     } else {
       previewEl.innerHTML = '';
     }
@@ -1442,7 +1458,7 @@ function renderRecents(main, ip) {
         item.className = 'list-item';
         item.innerHTML = `
           ${r.containerArt
-            ? `<img class="list-item-thumb" src="${escapeHtml(r.containerArt)}" alt="">`
+            ? `<img class="list-item-thumb" src="${proxyImage(r.containerArt)}" alt="">`
             : `<div class="list-item-thumb-placeholder">${sourceBadge(r.source)}</div>`}
           <div class="list-item-body">
             <div class="list-item-title">${escapeHtml(r.itemName)}</div>

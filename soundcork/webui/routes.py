@@ -264,6 +264,58 @@ async def proxy_speaker_post(ip: str, path: str, request: Request):
         return Response(content="Speaker timeout", status_code=504)
 
 
+# --- Image Proxy ---
+# Browsers block direct requests to third-party CDNs (tracking protection,
+# ad blockers, mixed-content).  Routing images through our server avoids this.
+
+
+# 1x1 transparent PNG for graceful fallback when upstream image is unavailable
+_TRANSPARENT_1X1 = (
+    b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01"
+    b"\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15\xc4\x89"
+    b"\x00\x00\x00\nIDATx\x9cc\x00\x01\x00\x00\x05\x00\x01"
+    b"\r\n\xb4\x00\x00\x00\x00IEND\xaeB`\x82"
+)
+
+
+@router.get("/api/image")
+async def proxy_image(url: str):
+    """Proxy an external image URL so the browser never fetches it directly."""
+    if not url.startswith(("http://", "https://")):
+        return Response(content="Invalid URL", status_code=400)
+    try:
+        async with httpx.AsyncClient(follow_redirects=True) as client:
+            resp = await client.get(url, timeout=SPEAKER_TIMEOUT)
+        if resp.status_code >= 400:
+            # Upstream refused — return transparent pixel so <img> doesn't break
+            return Response(
+                content=_TRANSPARENT_1X1,
+                status_code=200,
+                headers={
+                    "Content-Type": "image/png",
+                    "Cache-Control": "public, max-age=300",
+                },
+            )
+        content_type = resp.headers.get("content-type", "application/octet-stream")
+        return Response(
+            content=resp.content,
+            status_code=resp.status_code,
+            headers={
+                "Content-Type": content_type,
+                "Cache-Control": "public, max-age=86400",
+            },
+        )
+    except (httpx.ConnectError, httpx.TimeoutException):
+        return Response(
+            content=_TRANSPARENT_1X1,
+            status_code=200,
+            headers={
+                "Content-Type": "image/png",
+                "Cache-Control": "public, max-age=300",
+            },
+        )
+
+
 # --- TuneIn Proxy API ---
 # Avoids CORS issues when the browser needs to search TuneIn.
 
