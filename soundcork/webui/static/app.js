@@ -34,13 +34,22 @@ const state = {
 
   async addSpeaker(speaker) {
     try {
-      await fetch('/webui/api/speakers', {
+      const resp = await fetch('/webui/api/speakers', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(speaker),
       });
+      if (resp.status === 409) {
+        // Already exists, just make sure it's in our local list
+        if (!this.speakers.find(s => s.ipAddress === speaker.ipAddress)) {
+          this.speakers.push(speaker);
+        }
+        return;
+      }
+      if (!resp.ok) throw new Error(`Server error: ${resp.status}`);
       this.speakers.push(speaker);
     } catch (err) {
+      console.error('addSpeaker failed:', err);
       showToast('Failed to save speaker: ' + err.message, 'error');
     }
   },
@@ -1853,5 +1862,39 @@ function renderConfig(main) {
 document.addEventListener('DOMContentLoaded', async () => {
   // Load config and speakers from the server before rendering
   await state.loadFromServer();
+
+  // Auto-discover speakers on first load if none are saved
+  if (state.speakers.length === 0) {
+    try {
+      const resp = await fetch('/webui/api/discover-speakers');
+      if (resp.ok) {
+        const data = await resp.json();
+        const discovered = data.speakers || [];
+        for (const sp of discovered) {
+          if (!sp.ipAddress) continue;
+          try {
+            const infoResp = await fetch(`/webui/api/speaker/${sp.ipAddress}/info`);
+            if (!infoResp.ok) continue;
+            const text = await infoResp.text();
+            const xml = new DOMParser().parseFromString(text, 'text/xml');
+            const info = parseInfo(xml);
+            await state.addSpeaker({
+              id: info.deviceId || sp.ipAddress,
+              name: info.name || sp.name || sp.ipAddress,
+              emoji: '🔊',
+              ipAddress: sp.ipAddress,
+              type: info.type || sp.type || 'Unknown',
+              deviceId: info.deviceId || sp.deviceId || '',
+            });
+          } catch {
+            // Speaker not reachable, skip
+          }
+        }
+      }
+    } catch {
+      // Discovery failed, user can add manually
+    }
+  }
+
   handleRoute();
 });
