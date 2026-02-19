@@ -66,7 +66,10 @@ zeroconf_primer = ZeroConfPrimer(spotify_service, datastore, settings)
 async def lifespan(app: FastAPI):
     logger.info("Starting up soundcork")
     # datastore.discover_devices()
-    zeroconf_primer.start_periodic()
+    if settings.zeroconf_primer_enabled:
+        zeroconf_primer.start_periodic()
+    else:
+        logger.info("ZeroConf periodic primer disabled (ZEROCONF_PRIMER_ENABLED=false)")
     logger.info("done starting up server")
     yield
     zeroconf_primer.stop_periodic()

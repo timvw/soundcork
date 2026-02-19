@@ -31,6 +31,10 @@ class Settings(BaseSettings):
     log_request_body: bool = False
     log_request_headers: bool = False
 
+    # ZeroConf primer: periodic push of Spotify tokens to speakers
+    # Disable if speakers self-prime at boot via /mnt/nv/rc.local
+    zeroconf_primer_enabled: bool = True
+
     # Spotify OAuth
     spotify_client_id: str = ""
     spotify_client_secret: str = ""
