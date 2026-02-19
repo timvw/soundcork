@@ -1139,9 +1139,10 @@ function renderEditSpotifyPreset(main, ip, presetId) {
   // Load accounts
   (async () => {
     try {
-      const accounts = await api.mgmtGet('/mgmt/spotify/accounts');
+      const data = await api.mgmtGet('/mgmt/spotify/accounts');
+      const accounts = data.accounts || [];
       accountSelect.innerHTML = accounts.map(a =>
-        `<option value="${escapeHtml(a.username || a.id || '')}">${escapeHtml(a.display_name || a.username || a.id || 'Unknown')}</option>`
+        `<option value="${escapeHtml(a.spotifyUserId || '')}">${escapeHtml(a.displayName || a.spotifyUserId || 'Unknown')}</option>`
       ).join('');
     } catch (err) {
       accountSelect.innerHTML = `<option value="">Error loading accounts</option>`;
@@ -1706,10 +1707,11 @@ function renderSpotifyAccounts(main) {
 
   (async () => {
     try {
-      const accounts = await api.mgmtGet('/mgmt/spotify/accounts');
+      const data = await api.mgmtGet('/mgmt/spotify/accounts');
+      const accounts = data.accounts || [];
       const container = main.querySelector('#spotify-content');
 
-      if (!accounts || accounts.length === 0) {
+      if (accounts.length === 0) {
         container.innerHTML = `
           <div class="empty-state">
             <div class="empty-state-icon">&#x1F3B5;</div>
@@ -1724,9 +1726,9 @@ function renderSpotifyAccounts(main) {
             <div class="card-header">
               <div class="card-emoji">&#x1F3B5;</div>
               <div>
-                <div class="card-title">${escapeHtml(a.display_name || a.username || 'Unknown')}</div>
-                <div class="card-subtitle mono">${escapeHtml(a.username || a.id || '')}</div>
-                ${a.connected_at ? `<div class="card-subtitle">Connected ${escapeHtml(timeAgo(Math.floor(new Date(a.connected_at).getTime() / 1000)))}</div>` : ''}
+                <div class="card-title">${escapeHtml(a.displayName || a.spotifyUserId || 'Unknown')}</div>
+                <div class="card-subtitle mono">${escapeHtml(a.spotifyUserId || '')}</div>
+                ${a.createdAt ? `<div class="card-subtitle">Connected ${escapeHtml(timeAgo(Math.floor(new Date(a.createdAt).getTime() / 1000)))}</div>` : ''}
               </div>
             </div>`;
           container.appendChild(card);
@@ -1775,10 +1777,11 @@ function renderDeviceEvents(main, deviceId) {
 
   (async () => {
     try {
-      const events = await api.mgmtGet(`/mgmt/devices/${deviceId}/events`);
+      const data = await api.mgmtGet(`/mgmt/devices/${deviceId}/events`);
+      const events = data.events || [];
       const container = main.querySelector('#events-list');
 
-      if (!events || events.length === 0) {
+      if (events.length === 0) {
         container.innerHTML = '<div class="empty-state"><div class="empty-state-icon">&#x1F4CB;</div><p>No events recorded</p></div>';
         return;
       }
