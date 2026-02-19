@@ -849,22 +849,34 @@ function renderSpeakerDetail(main, ip) {
           ${np.artist ? `<div class="now-playing-artist">${escapeHtml(np.artist)}</div>` : ''}
           ${np.album ? `<div class="now-playing-album">${escapeHtml(np.album)}</div>` : ''}
           <div class="now-playing-controls">
-            <button class="btn btn-icon" id="play-pause-btn" title="Play/Pause">&#x23EF;</button>
+            <button class="btn btn-icon" id="prev-btn" title="Previous Track">&#x23EE;</button>
+            <button class="btn btn-icon btn-lg" id="play-pause-btn" title="Play/Pause">&#x23EF;</button>
+            <button class="btn btn-icon" id="next-btn" title="Next Track">&#x23ED;</button>
+          </div>
+          <div class="now-playing-controls-secondary">
+            <button class="btn btn-icon btn-sm ${np.shuffleSetting === 'SHUFFLE_ON' ? 'active' : ''}" id="shuffle-btn" title="Shuffle">&#x1F500;</button>
+            <button class="btn btn-icon btn-sm ${np.repeatSetting !== 'REPEAT_OFF' ? 'active' : ''}" id="repeat-btn" title="Repeat">${np.repeatSetting === 'REPEAT_ONE' ? '&#x1F502;' : '&#x1F501;'}</button>
             ${sourceBadge(np.source)}
             ${spotifyUrl ? `<a href="${escapeHtml(spotifyUrl)}" target="_blank" rel="noopener" class="btn btn-sm">Open Spotify</a>` : ''}
           </div>
-          <div class="now-playing-indicators">
-            ${np.shuffleSetting === 'SHUFFLE_ON' ? '<span class="badge badge-spotify">Shuffle</span>' : ''}
-            ${np.repeatSetting === 'REPEAT_ALL' ? '<span class="badge badge-tunein">Repeat All</span>' : ''}
-            ${np.repeatSetting === 'REPEAT_ONE' ? '<span class="badge badge-tunein">Repeat One</span>' : ''}
-          </div>
         </div>
       </div>`;
-    section.querySelector('#play-pause-btn')?.addEventListener('click', async () => {
+    async function sendKey(keyValue) {
       try {
-        await api.speakerPost(ip, 'key', '<key state="press" sender="Gabbo">PLAY_PAUSE</key>');
-        await api.speakerPost(ip, 'key', '<key state="release" sender="Gabbo">PLAY_PAUSE</key>');
+        await api.speakerPost(ip, 'key', `<key state="press" sender="Gabbo">${keyValue}</key>`);
+        await api.speakerPost(ip, 'key', `<key state="release" sender="Gabbo">${keyValue}</key>`);
       } catch (err) { showToast(err.message, 'error'); }
+    }
+
+    section.querySelector('#play-pause-btn')?.addEventListener('click', () => sendKey('PLAY_PAUSE'));
+    section.querySelector('#prev-btn')?.addEventListener('click', () => sendKey('PREV_TRACK'));
+    section.querySelector('#next-btn')?.addEventListener('click', () => sendKey('NEXT_TRACK'));
+    section.querySelector('#shuffle-btn')?.addEventListener('click', () =>
+      sendKey(np.shuffleSetting === 'SHUFFLE_ON' ? 'SHUFFLE_OFF' : 'SHUFFLE_ON'));
+    section.querySelector('#repeat-btn')?.addEventListener('click', () => {
+      if (np.repeatSetting === 'REPEAT_OFF') sendKey('REPEAT_ALL');
+      else if (np.repeatSetting === 'REPEAT_ALL') sendKey('REPEAT_ONE');
+      else sendKey('REPEAT_OFF');
     });
   }
 

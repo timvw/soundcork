@@ -594,14 +594,24 @@ input[type="range"]::-moz-range-thumb {
 .now-playing-controls {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
+  justify-content: center;
+  gap: 0.75rem;
   margin-top: 0.75rem;
 }
-.now-playing-indicators {
+.now-playing-controls .btn-lg {
+  font-size: 1.5rem;
+  padding: 0.5rem 0.75rem;
+}
+.now-playing-controls-secondary {
   display: flex;
-  gap: 0.4rem;
-  margin-top: 0.5rem;
   align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+.now-playing-controls-secondary .btn-icon.active {
+  color: var(--accent);
+  background: var(--bg-secondary);
 }
 
 /* --- Remote Control Grid --- */
