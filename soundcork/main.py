@@ -56,23 +56,18 @@ datastore = DataStore()
 settings = Settings()
 
 from soundcork.spotify_service import SpotifyService
-from soundcork.zeroconf_primer import ZeroConfPrimer
 
 spotify_service = SpotifyService()
-zeroconf_primer = ZeroConfPrimer(spotify_service, datastore, settings)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("Starting up soundcork")
-    # datastore.discover_devices()
-    if settings.zeroconf_primer_enabled:
-        zeroconf_primer.start_periodic()
-    else:
-        logger.info("ZeroConf periodic primer disabled (ZEROCONF_PRIMER_ENABLED=false)")
+    # Server-side ZeroConf priming has been removed. Spotify priming is
+    # now handled by the on-speaker boot primer (/mnt/nv/spotify-boot-primer)
+    # which fetches a token from GET /mgmt/spotify/token at boot.
     logger.info("done starting up server")
     yield
-    zeroconf_primer.stop_periodic()
     logger.debug("closing server")
 
 
@@ -150,25 +145,9 @@ async def log_unknown_requests(request: Request, call_next):
     return response
 
 
-@app.middleware("http")
-async def register_speakers_middleware(request: Request, call_next):
-    """Capture account/device IDs from marge URLs for the Spotify primer."""
-    response = await call_next(request)
-
-    # Extract account and device IDs from marge URL paths like:
-    # /marge/streaming/account/{account}/device/{device}/...
-    path = request.url.path
-    if "/marge/" in path and "/account/" in path and "/device/" in path:
-        parts = path.split("/")
-        try:
-            acc_idx = parts.index("account") + 1
-            dev_idx = parts.index("device") + 1
-            if acc_idx < len(parts) and dev_idx < len(parts):
-                zeroconf_primer.register_speaker(parts[acc_idx], parts[dev_idx])
-        except (ValueError, IndexError):
-            pass
-
-    return response
+# register_speakers_middleware removed — server-side ZeroConf priming
+# has been replaced by the on-speaker boot primer.  Speaker discovery
+# is no longer needed because the speaker primes itself at boot.
 
 
 startup_timestamp = int(datetime.now().timestamp() * 1000)
@@ -185,10 +164,11 @@ def read_root():
     status_code=HTTPStatus.OK,
 )
 def power_on(request: Request):
-    # Prime speakers for Spotify after boot.  The primer handles
-    # retry/backoff in a background thread so the response is fast.
-    source_ip = request.headers.get("x-forwarded-for", "").split(",")[0].strip() or None
-    zeroconf_primer.on_power_on(source_ip)
+    # Spotify priming is handled by the on-speaker boot primer
+    # (/mnt/nv/spotify-boot-primer) which fetches a token from
+    # GET /mgmt/spotify/token and primes locally via ZeroConf.
+    # No server-side priming needed.
+    logger.info("power_on from %s", request.headers.get("x-forwarded-for", "unknown"))
     return
 
 
