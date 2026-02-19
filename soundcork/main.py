@@ -579,7 +579,7 @@ def streamingsourceproviders():
     response.headers["content-type"] = "application/vnd.bose.streaming-v1.2+xml"
     # sourceproviders seems to return now as its etag
     etag = int(datetime.now().timestamp() * 1000)
-    response.headers["etag"] = str(etag)
+    response.headers["ETag"] = str(etag)
     return response
 
 
