@@ -55,17 +55,27 @@ logger = logging.getLogger(__name__)
 datastore = DataStore()
 settings = Settings()
 
+from soundcork.speaker_allowlist import SpeakerAllowlist
 from soundcork.spotify_service import SpotifyService
 
 spotify_service = SpotifyService()
+
+_speaker_allowlist: SpeakerAllowlist | None = None
+
+
+def get_speaker_allowlist() -> SpeakerAllowlist:
+    """Return the global speaker allowlist (lazy-init, patchable for tests)."""
+    global _speaker_allowlist
+    if _speaker_allowlist is None:
+        _speaker_allowlist = SpeakerAllowlist(datastore)
+    return _speaker_allowlist
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("Starting up soundcork")
-    # Server-side ZeroConf priming has been removed. Spotify priming is
-    # now handled by the on-speaker boot primer (/mnt/nv/spotify-boot-primer)
-    # which fetches a token from GET /mgmt/spotify/token at boot.
+    # Initialise speaker allowlist at startup
+    get_speaker_allowlist()
     logger.info("done starting up server")
     yield
     logger.debug("closing server")
@@ -93,6 +103,9 @@ app = FastAPI(
     version="0.0.1",
     openapi_tags=tags_metadata,
     lifespan=lifespan,
+    docs_url=None,
+    redoc_url=None,
+    openapi_url=None,
 )
 
 from soundcork.mgmt import router as mgmt_router
@@ -156,9 +169,43 @@ async def log_unknown_requests(request: Request, call_next):
     return response
 
 
-# register_speakers_middleware removed — server-side ZeroConf priming
-# has been replaced by the on-speaker boot primer.  Speaker discovery
-# is no longer needed because the speaker primes itself at boot.
+# --- Speaker IP restriction middleware ---
+# Bose protocol endpoints are only accessible from registered speaker IPs.
+# Paths starting with /webui, /mgmt, /docs, /openapi.json, or / (root) are exempt.
+
+_EXEMPT_PREFIXES = ("/webui", "/mgmt", "/docs", "/openapi.json")
+
+
+@app.middleware("http")
+async def speaker_ip_restriction(request: Request, call_next):
+    """Block Bose protocol requests from unknown IPs."""
+    path = request.url.path
+
+    # Exempt paths: webui (browser), mgmt (has its own auth), docs, root health
+    if path == "/" or any(path.startswith(p) for p in _EXEMPT_PREFIXES):
+        return await call_next(request)
+
+    # Determine client IP: trust X-Forwarded-For (behind ingress/proxy)
+    forwarded = request.headers.get("x-forwarded-for")
+    if forwarded:
+        client_ip = forwarded.split(",")[0].strip()
+    else:
+        client_ip = request.client.host if request.client else ""
+
+    allowlist = get_speaker_allowlist()
+    if not allowlist.is_allowed(client_ip):
+        logger.warning(
+            "Blocked %s %s from %s (not a registered speaker)",
+            request.method,
+            path,
+            client_ip,
+        )
+        return JSONResponse(
+            {"detail": "Forbidden: unknown speaker IP"},
+            status_code=403,
+        )
+
+    return await call_next(request)
 
 
 startup_timestamp = int(datetime.now().timestamp() * 1000)

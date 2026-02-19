@@ -1,7 +1,9 @@
 import asyncio
+import ipaddress
 import json
 import logging
 import os
+from urllib.parse import urlparse
 
 import httpx
 import websockets
@@ -20,6 +22,75 @@ SPEAKER_TIMEOUT = 10.0
 
 # Server-side settings (loaded once at import time, same instance as main app)
 _settings = Settings()
+
+
+# --- Security helpers ---
+
+# Allowed CDN domains for the image proxy (prevents SSRF to arbitrary URLs)
+_IMAGE_PROXY_ALLOWED_DOMAINS = frozenset(
+    {
+        "cdn-profiles.tunein.com",
+        "cdn-images.tunein.com",
+        "cdn-albums.tunein.com",
+        "cdn-radiotime-logos.tunein.com",
+        "image-cdn-ak.spotifycdn.com",
+        "image-cdn-fa.spotifycdn.com",
+        "i.scdn.co",
+        "mosaic.scdn.co",
+        "seed-mix-image.spotifycdn.com",
+    }
+)
+
+# Allowed mgmt proxy paths (prevents exposing token endpoints)
+_MGMT_ALLOWED_PATHS = frozenset(
+    {
+        "spotify/accounts",
+        "spotify/entity",
+        "spotify/init",
+        "spotify/callback",
+    }
+)
+# Paths that are allowed as prefixes (e.g. accounts/{id}/speakers)
+_MGMT_ALLOWED_PREFIXES = ("accounts/",)
+
+
+def _is_private_ip(hostname: str) -> bool:
+    """Check if a hostname resolves to a private/loopback/link-local IP."""
+    try:
+        addr = ipaddress.ip_address(hostname)
+        return addr.is_private or addr.is_loopback or addr.is_link_local
+    except ValueError:
+        return False
+
+
+def _is_allowed_image_url(url: str) -> bool:
+    """Check if a URL is on an allowed CDN domain and not a private IP."""
+    try:
+        parsed = urlparse(url)
+        hostname = parsed.hostname or ""
+        if _is_private_ip(hostname):
+            return False
+        return hostname in _IMAGE_PROXY_ALLOWED_DOMAINS
+    except Exception:
+        return False
+
+
+def _is_allowed_mgmt_path(path: str) -> bool:
+    """Check if a mgmt proxy path is on the allowlist."""
+    # Normalize: strip leading slashes, reject path traversal
+    clean = path.lstrip("/")
+    if ".." in clean:
+        return False
+    if clean in _MGMT_ALLOWED_PATHS:
+        return True
+    return any(clean.startswith(prefix) for prefix in _MGMT_ALLOWED_PREFIXES)
+
+
+def _get_speaker_allowlist():
+    """Get the speaker allowlist from main (lazy import to avoid circular deps)."""
+    from soundcork.main import get_speaker_allowlist
+
+    return get_speaker_allowlist()
 
 
 # --- Speaker Storage ---
@@ -163,6 +234,10 @@ async def discover_speakers():
 @router.get("/api/mgmt/{path:path}")
 async def proxy_mgmt_get(path: str, request: Request):
     """Proxy GET requests to the management API with server-side auth."""
+    if not _is_allowed_mgmt_path(path):
+        return JSONResponse(
+            {"detail": "Forbidden: mgmt path not allowed"}, status_code=403
+        )
     params = dict(request.query_params)
     base = _settings.base_url or f"http://localhost:8000"
     auth = httpx.BasicAuth(_settings.mgmt_username, _settings.mgmt_password)
@@ -189,6 +264,10 @@ async def proxy_mgmt_get(path: str, request: Request):
 @router.post("/api/mgmt/{path:path}")
 async def proxy_mgmt_post(path: str, request: Request):
     """Proxy POST requests to the management API with server-side auth."""
+    if not _is_allowed_mgmt_path(path):
+        return JSONResponse(
+            {"detail": "Forbidden: mgmt path not allowed"}, status_code=403
+        )
     body = await request.body()
     content_type = request.headers.get("content-type", "application/json")
     base = _settings.base_url or f"http://localhost:8000"
@@ -222,6 +301,10 @@ async def proxy_mgmt_post(path: str, request: Request):
 @router.get("/api/speaker/{ip}/{path:path}")
 async def proxy_speaker_get(ip: str, path: str):
     """Proxy GET requests to a speaker on the LAN."""
+    if not _get_speaker_allowlist().is_registered_speaker(ip):
+        return JSONResponse(
+            {"detail": "Forbidden: unregistered speaker IP"}, status_code=403
+        )
     try:
         async with httpx.AsyncClient() as client:
             resp = await client.get(
@@ -242,6 +325,10 @@ async def proxy_speaker_get(ip: str, path: str):
 @router.post("/api/speaker/{ip}/{path:path}")
 async def proxy_speaker_post(ip: str, path: str, request: Request):
     """Proxy POST requests to a speaker on the LAN."""
+    if not _get_speaker_allowlist().is_registered_speaker(ip):
+        return JSONResponse(
+            {"detail": "Forbidden: unregistered speaker IP"}, status_code=403
+        )
     body = await request.body()
     try:
         async with httpx.AsyncClient() as client:
@@ -283,6 +370,10 @@ async def proxy_image(url: str):
     """Proxy an external image URL so the browser never fetches it directly."""
     if not url.startswith(("http://", "https://")):
         return Response(content="Invalid URL", status_code=400)
+    if not _is_allowed_image_url(url):
+        return JSONResponse(
+            {"detail": "Forbidden: URL domain not allowed"}, status_code=403
+        )
     try:
         async with httpx.AsyncClient(follow_redirects=True) as client:
             resp = await client.get(url, timeout=SPEAKER_TIMEOUT)
@@ -351,6 +442,9 @@ SPEAKER_WS_PORT = 8080
 @router.websocket("/ws/speaker/{ip}")
 async def proxy_speaker_websocket(websocket: WebSocket, ip: str):
     """Proxy WebSocket connections to a speaker for real-time updates."""
+    if not _get_speaker_allowlist().is_registered_speaker(ip):
+        await websocket.close(code=4003, reason="Unregistered speaker IP")
+        return
     await websocket.accept(subprotocol="gabbo")
     speaker_uri = f"ws://{ip}:{SPEAKER_WS_PORT}"
     try:
