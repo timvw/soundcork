@@ -989,6 +989,91 @@ app.add_api_route(
     tags=["marge-alias"],
 )
 
+# --- Marge /accounts/ style aliases (gesellix/Bose-SoundTouch path format) ---
+# The Go project registers these shorter paths alongside /streaming/account/ paths.
+# Both path styles should work for maximum speaker firmware compatibility.
+app.add_api_route(
+    "/marge/accounts/{account}/full",
+    account_full,
+    methods=["GET"],
+    tags=["marge-alias"],
+)
+app.add_api_route(
+    "/accounts/{account}/full", account_full, methods=["GET"], tags=["marge-alias"]
+)
+app.add_api_route(
+    "/marge/accounts/{account}/devices/{device}/presets",
+    account_presets,
+    methods=["GET"],
+    tags=["marge-alias"],
+)
+app.add_api_route(
+    "/accounts/{account}/devices/{device}/presets",
+    account_presets,
+    methods=["GET"],
+    tags=["marge-alias"],
+)
+app.add_api_route(
+    "/marge/accounts/{account}/devices/{device}/presets/{preset_number}",
+    put_account_preset,
+    methods=["PUT"],
+    tags=["marge-alias"],
+)
+app.add_api_route(
+    "/accounts/{account}/devices/{device}/presets/{preset_number}",
+    put_account_preset,
+    methods=["PUT"],
+    tags=["marge-alias"],
+)
+app.add_api_route(
+    "/marge/accounts/{account}/devices/{device}/recents",
+    account_recents,
+    methods=["GET"],
+    tags=["marge-alias"],
+)
+app.add_api_route(
+    "/accounts/{account}/devices/{device}/recents",
+    account_recents,
+    methods=["GET"],
+    tags=["marge-alias"],
+)
+app.add_api_route(
+    "/marge/accounts/{account}/devices/{device}/recents",
+    post_account_recent,
+    methods=["POST"],
+    tags=["marge-alias"],
+)
+app.add_api_route(
+    "/accounts/{account}/devices/{device}/recents",
+    post_account_recent,
+    methods=["POST"],
+    tags=["marge-alias"],
+)
+app.add_api_route(
+    "/marge/accounts/{account}/devices",
+    post_account_device,
+    methods=["POST"],
+    tags=["marge-alias"],
+)
+app.add_api_route(
+    "/accounts/{account}/devices",
+    post_account_device,
+    methods=["POST"],
+    tags=["marge-alias"],
+)
+app.add_api_route(
+    "/marge/accounts/{account}/devices/{device}",
+    delete_account_device,
+    methods=["DELETE"],
+    tags=["marge-alias"],
+)
+app.add_api_route(
+    "/accounts/{account}/devices/{device}",
+    delete_account_device,
+    methods=["DELETE"],
+    tags=["marge-alias"],
+)
+
 # --- Customer root-level aliases (already at /customer/..., no prefix to strip) ---
 # These are already at root level, no aliases needed.
 
