@@ -22,7 +22,7 @@ We'll maintain a forum post with the [Current Status of Bose Cloud Services](htt
 | AUX input | Working | Not affected by shutdown |
 | Bluetooth | Working | Not affected by shutdown |
 | Firmware updates | Blocked | SoundCork returns "no updates available" |
-| SoundTouch app presets | Not working | App can no longer configure TuneIn presets — use [Bose CLI](https://github.com/timvw/bose) instead |
+| SoundTouch app presets | Working | Configure TuneIn presets via the [Web UI](/webui/) or [Bose CLI](https://github.com/timvw/bose) |
 
 ## Quick Start
 
