@@ -17,6 +17,8 @@ We'll maintain a forum post with the [Current Status of Bose Cloud Services](htt
 | TuneIn radio presets | Working | Presets 1-6, station playback |
 | Spotify Connect | Working | Cast from the Spotify app — independent of Bose servers |
 | Spotify presets | Working | Requires a [one-time kick-start](docs/spotify.md#fixing-spotify-presets) via Spotify Connect |
+| Web UI | Working | Browser-based speaker control at `/webui/` |
+| SSO/OIDC authentication | Working | Optional — works with any OIDC provider (Authentik, Keycloak, Auth0, etc.) |
 | AUX input | Working | Not affected by shutdown |
 | Bluetooth | Working | Not affected by shutdown |
 | Firmware updates | Blocked | SoundCork returns "no updates available" |
@@ -39,6 +41,8 @@ curl http://your-server:8000/
 # {"Bose":"Can't Brick Us"}
 ```
 
+Then open `http://your-server:8000/webui/` to access the Web UI.
+
 The container image supports `linux/amd64` and `linux/arm64` (Raspberry Pi).
 
 See [Deployment Guide](docs/deployment.md) for Docker Compose, Kubernetes, and bare metal options.
@@ -49,6 +53,26 @@ See [Deployment Guide](docs/deployment.md) for Docker Compose, Kubernetes, and b
 2. **Extract your speaker data** (presets, sources, device info) — [Speaker Setup Guide](docs/speaker-setup.md#step-2-extract-speaker-data)
 3. **Deploy SoundCork** on your network — [Deployment Guide](docs/deployment.md)
 4. **Redirect your speaker** to SoundCork — [Speaker Setup Guide](docs/speaker-setup.md#step-3-redirect-speaker-to-soundcork)
+
+## Authentication
+
+The Web UI is protected by session-based authentication. By default it uses a username/password login (configured via `MGMT_USERNAME`/`MGMT_PASSWORD`).
+
+Optionally, you can enable **SSO via any OpenID Connect provider** (Authentik, Keycloak, Auth0, Google, Okta, etc.):
+
+```bash
+docker run -d --name soundcork \
+  -p 8000:8000 \
+  -v ./data:/soundcork/data \
+  -e base_url=http://your-server:8000 \
+  -e data_dir=/soundcork/data \
+  -e OIDC_ISSUER_URL=https://your-provider/application/o/soundcork/ \
+  -e OIDC_CLIENT_ID=soundcork \
+  -e OIDC_CLIENT_SECRET=your-secret \
+  ghcr.io/timvw/soundcork:main
+```
+
+When OIDC is configured, the login page shows a "Sign in with SSO" button. When it's not configured, the password form is shown. See [Deployment Guide](docs/deployment.md#authentication) for details.
 
 ## How It Works
 
