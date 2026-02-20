@@ -24,6 +24,20 @@ We'll maintain a forum post with the [Current Status of Bose Cloud Services](htt
 | Firmware updates | Blocked | SoundCork returns "no updates available" |
 | SoundTouch app presets | Working | Configure TuneIn presets via the [Web UI](/webui/) or [Bose CLI](https://github.com/timvw/bose) |
 
+## Screenshots
+
+| Login (SSO) | Dashboard |
+|:-----------:|:---------:|
+| ![Login](docs/screenshots/login-sso.png) | ![Dashboard](docs/screenshots/dashboard.png) |
+
+| Speaker Controls & Presets | Manage Presets |
+|:--------------------------:|:--------------:|
+| ![Speaker](docs/screenshots/speaker-controls.png) | ![Presets](docs/screenshots/manage-presets.png) |
+
+| Spotify |
+|:-------:|
+| ![Spotify](docs/screenshots/spotify.png) |
+
 ## Quick Start
 
 ```bash
