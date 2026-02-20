@@ -18,5 +18,5 @@ WORKDIR /app/soundcork
 # Override log files to stdout/stderr for container logging
 CMD ["gunicorn", "-c", "gunicorn_conf.py", "--bind", "0.0.0.0:8000", \
      "--access-logfile", "-", "--error-logfile", "-", \
-     "--workers", "2", \
+     "--workers", "1", \
      "main:app"]
