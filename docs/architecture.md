@@ -103,3 +103,67 @@ In proxy mode, all traffic is logged to `SOUNDCORK_LOG_DIR/traffic.jsonl` in JSO
 - Fallback reason (if applicable): `circuit_open`, `upstream_error`, `upstream_http_404`, etc.
 
 Useful for debugging and understanding speaker behavior. Not active in local mode.
+
+## Bose SoundTouch Security Model
+
+A summary of the speaker's security posture, based on firmware analysis, traffic
+capture, and reverse-engineering the Bose SoundTouch Android app
+(`com.bose.soundtouch.apk`).
+
+### LAN Exposure (No Authentication)
+
+The speaker exposes several unauthenticated services on the local network:
+
+| Port | Protocol | What's Exposed |
+|------|----------|----------------|
+| **8090** | HTTP | Device info (`/info`): `margeAccountUUID`, device ID, serial numbers, MAC addresses, firmware version. Also: `/presets`, `/recents`, `/now_playing`, `/volume`, `/sources` (source types only, no credentials). |
+| **8080** | WebSocket (`gabbo`) | Real-time control and device info. The Bose app uses this for the ownership check — it reads `margeAccountUUID` from the device info XML. |
+| **8200** | HTTP (Spotify ZeroConf) | `GET /zc?action=getInfo` returns the active Spotify user ID (but **not** the access token). `POST /zc` with `action=addUser` pushes a Spotify token to the speaker — anyone on the LAN could hijack the Spotify session. |
+
+Anyone on the same WiFi network can reach all of these without credentials.
+
+**What is NOT exposed on the LAN:**
+- `Sources.xml` (music service tokens: Spotify, TuneIn, Pandora) — only accessible via SSH at `/mnt/nv/BoseApp-Persistence/1/Sources.xml`
+- The Bose cloud auth token — stored on the speaker's filesystem, only transmitted over HTTPS to `streaming.bose.com`
+- Spotify access tokens — write-only via port 8200 `addUser`, never returned by `getInfo`
+
+### SSH Root Access
+
+When SSH is enabled (via USB stick or the persistent `/mnt/nv/remote_services`
+flag), the speaker accepts `ssh root@<ip>` with **no password**. This grants
+access to everything on the filesystem, including:
+
+- `/mnt/nv/BoseApp-Persistence/1/Sources.xml` — Spotify/TuneIn/Pandora OAuth tokens
+- `/opt/Bose/etc/SoundTouchSdkPrivateCfg.xml` — server URLs, account UUID
+- The Bose cloud auth token (stored on disk, used in `Authorization` headers)
+
+### Bose Cloud Authentication (from APK analysis)
+
+The original Bose cloud (`streaming.bose.com`) used a session-based model:
+
+1. **User login**: The Bose app sends `POST /streaming/account/login` with
+   `<login><username>email</username><password>pass</password></login>`.
+   The server returns the account ID in the response body (`<account id="...">`)
+   and an auth token in the `Credentials` response header.
+
+2. **Device pairing**: The app pushes both the account ID and auth token to the
+   speaker via a WebSocket message on port 8080:
+   `<PairDeviceWithAccount><accountId>...</accountId><userAuthToken>...</userAuthToken></PairDeviceWithAccount>`.
+   The speaker stores these and uses them for all subsequent cloud requests.
+
+3. **Ongoing API calls**: Every request to `streaming.bose.com` includes the
+   auth token in the `Authorization` header, along with `GUID`, `ClientType`,
+   version headers, and a static `MARGE_SERVER_KEY`.
+
+4. **Ownership check** (client-side only): The Bose app discovers speakers via
+   mDNS (`_soundtouch._tcp.local.`) and SSDP, connects via WebSocket, reads the
+   speaker's `margeAccountUUID`, and only shows speakers whose account ID matches
+   the logged-in user. This is a client-side UI filter — the speaker itself does
+   not gate access.
+
+### Implications
+
+- The `margeAccountUUID` is always visible to anyone on the LAN (port 8090, no auth)
+- The Bose cloud auth token is only accessible via SSH or by intercepting HTTPS traffic
+- Without the auth token, the cloud would reject requests — the account ID alone was not sufficient
+- SoundCork adds its own security layer (IP allowlist, management API basic auth, WebUI session auth) that the original Bose protocol did not have
