@@ -82,7 +82,7 @@ See [Architecture](docs/architecture.md) for details on the Bose servers, operat
 
 ## Bose CLI
 
-The official SoundTouch app can no longer configure presets pointing to TuneIn stations. The [Bose CLI](https://github.com/timvw/bose) talks directly to the speaker's local API (port 8090) and works independently of any cloud server:
+The [Bose CLI](https://github.com/timvw/bose) talks directly to the speaker's local API (port 8090) and works independently of any cloud server:
 
 ```bash
 brew install timvw/tap/bose
