@@ -8,6 +8,22 @@
 // ===================================================================
 
 /**
+ * Get the CSRF token from sessionStorage (password login) or cookie (OIDC login).
+ */
+function getCsrfToken() {
+  const stored = sessionStorage.getItem('csrf_token');
+  if (stored) return stored;
+  // OIDC login stores CSRF in a non-httponly cookie
+  const match = document.cookie.match(/webui_csrf=([^;]+)/);
+  if (match) {
+    // Move to sessionStorage for consistency
+    sessionStorage.setItem('csrf_token', match[1]);
+    return match[1];
+  }
+  return null;
+}
+
+/**
  * Wrapper around fetch() that:
  * 1. Adds X-CSRF-Token header to mutating requests (POST/PUT/DELETE/PATCH)
  * 2. Redirects to /webui/login on 401 responses
@@ -16,7 +32,7 @@ const _originalFetch = window.fetch;
 window.fetch = async function(url, options = {}) {
   const method = (options.method || 'GET').toUpperCase();
   if (['POST', 'PUT', 'DELETE', 'PATCH'].includes(method)) {
-    const csrfToken = sessionStorage.getItem('csrf_token');
+    const csrfToken = getCsrfToken();
     if (csrfToken) {
       options.headers = options.headers || {};
       if (options.headers instanceof Headers) {

@@ -35,6 +35,15 @@ class Settings(BaseSettings):
     # Disable if speakers self-prime at boot via /mnt/nv/rc.local
     zeroconf_primer_enabled: bool = True
 
+    # OIDC authentication (optional — when all three are set, OIDC is enabled)
+    oidc_issuer_url: str = ""
+    oidc_client_id: str = ""
+    oidc_client_secret: str = ""
+
+    @property
+    def oidc_enabled(self) -> bool:
+        return bool(self.oidc_issuer_url and self.oidc_client_id and self.oidc_client_secret)
+
     # Spotify OAuth
     spotify_client_id: str = ""
     spotify_client_secret: str = ""

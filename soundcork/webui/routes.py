@@ -189,6 +189,7 @@ async def webui_config():
     return {
         "baseUrl": _settings.base_url,
         "hasSpotify": bool(_settings.spotify_client_id),
+        "oidcEnabled": _settings.oidc_enabled,
     }
 
 

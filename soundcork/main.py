@@ -115,9 +115,11 @@ app.include_router(mgmt_router)
 
 from fastapi.staticfiles import StaticFiles
 
+from soundcork.oidc import router as oidc_router
 from soundcork.webui.routes import router as webui_router
 
 app.include_router(webui_router)
+app.include_router(oidc_router)
 app.mount(
     "/webui/static",
     StaticFiles(directory=os.path.join(os.path.dirname(__file__), "webui", "static")),
@@ -170,7 +172,7 @@ async def log_unknown_requests(request: Request, call_next):
 # Bose protocol endpoints are only accessible from registered speaker IPs.
 # Paths starting with /webui, /mgmt, /docs, /openapi.json, or / (root) are exempt.
 
-_EXEMPT_PREFIXES = ("/webui", "/mgmt", "/docs", "/openapi.json")
+_EXEMPT_PREFIXES = ("/webui", "/mgmt", "/docs", "/openapi.json", "/auth")
 
 
 @app.middleware("http")
