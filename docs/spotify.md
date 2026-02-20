@@ -28,10 +28,19 @@ On cold boot, the speaker does **not** request a Spotify token — it only fetch
 
 The ZeroConf primer solves this by proactively pushing a fresh Spotify access token to the speaker via the ZeroConf endpoint (port 8200). This is the same mechanism the Spotify desktop app uses when you cast to a speaker.
 
-**When it runs:**
+There are two ways to run the ZeroConf primer:
+
+**Server-side** (default): SoundCork pushes tokens to the speaker over the
+network. No installation on the speaker needed.
+
 - On speaker boot (`power_on` event), with retry/backoff (5s, 10s, 20s delays)
 - Periodically every 45 minutes (tokens expire after 1 hour)
 - When a new speaker is first seen via marge requests
+
+**On-speaker**: A boot script on the speaker itself fetches a token from
+SoundCork and primes locally. See the
+[Speaker Setup Guide](speaker-setup.md#step-5-install-spotify-boot-primer-optional)
+for installation instructions.
 
 **Boot sequence observed:**
 ```
@@ -119,7 +128,26 @@ If you don't want to configure Spotify credentials in soundcork, you can manuall
 
 ## Managing Presets
 
-The official SoundTouch app can no longer configure presets pointing to TuneIn stations. Use the [Bose CLI](https://github.com/timvw/bose) to manage presets directly via the speaker's local API (port 8090):
+The official SoundTouch app can no longer configure presets after the cloud
+shutdown. There are two ways to manage presets:
+
+### Web UI
+
+The SoundCork Web UI (`/webui/`) lets you manage all 6 presets visually. You
+can set presets from three source types:
+
+- **Spotify** — paste a Spotify URI or URL (playlist, album, artist, track),
+  select your linked Spotify account, and save. The UI previews the entity
+  (artwork + name) before saving.
+- **TuneIn** — search for radio stations by name, preview station details
+  (logo, description, genre, location), and save.
+- **Internet Radio** — enter a stream URL manually with an optional station
+  name and cover art URL. Use this for stations not in TuneIn's directory.
+
+### Bose CLI
+
+The [Bose CLI](https://github.com/timvw/bose) manages presets directly via the
+speaker's local API (port 8090):
 
 ```bash
 brew install timvw/tap/bose

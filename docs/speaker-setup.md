@@ -275,6 +275,160 @@ ssh -o IdentitiesOnly=yes -o IdentityFile=/dev/null \
   directory is on the rootfs (UBIFS) and persists across reboots, so the key
   file remains available for the next boot cycle.
 
+## Step 5: Install Spotify Boot Primer (Optional)
+
+If you use Spotify presets, the speaker needs an active Spotify session to play
+them. Normally, SoundCork's server-side ZeroConf primer handles this (see
+[Spotify Guide](spotify.md#zeroconf-primer-cold-boot-activation)). As an
+alternative, you can install a script directly on the speaker that primes
+Spotify at boot by fetching a token from your SoundCork server.
+
+This is useful if you want the speaker to self-prime without relying on
+SoundCork's periodic ZeroConf pushes, or as a belt-and-suspenders approach
+alongside the server-side primer.
+
+### Prerequisites
+
+- SoundCork running with a linked Spotify account (Steps 1-3 above complete)
+- The `GET /mgmt/spotify/token` endpoint on your SoundCork server
+- Management API credentials (`MGMT_USERNAME` / `MGMT_PASSWORD`)
+
+### 1. Create the config file
+
+```sh
+ssh root@<speaker-ip>
+
+cat > /mnt/nv/BoseApp-Persistence/1/spotify-primer.conf << 'EOF'
+SOUNDCORK_URL=https://soundcork.example.com
+SOUNDCORK_USER=admin
+SOUNDCORK_PASS=secret
+EOF
+chmod 600 /mnt/nv/BoseApp-Persistence/1/spotify-primer.conf
+```
+
+Replace the URL and credentials with your SoundCork server details. The file is
+`chmod 600` so only root can read it.
+
+> **Note**: No Spotify credentials are stored on the speaker — only the
+> SoundCork connection info. SoundCork handles all Spotify OAuth logic
+> server-side.
+
+### 2. Install the boot primer script
+
+From your local machine, copy the script to the speaker:
+
+```sh
+cat scripts/spotify-boot-primer | ssh root@<speaker-ip> \
+    "mkdir -p /mnt/nv/bin && cat > /mnt/nv/bin/spotify-boot-primer && chmod +x /mnt/nv/bin/spotify-boot-primer"
+```
+
+The script is also available in the
+[`scripts/`](../scripts/) directory of this repository and as a
+[GitHub Gist](https://gist.github.com/timvw/84ef8768ff876ef6805012b3eb4015b0).
+
+### 3. Update rc.local
+
+If you already have an `rc.local` from Step 4 (SSH hardening), add the primer
+to the end:
+
+```sh
+ssh root@<speaker-ip> 'cat >> /mnt/nv/rc.local' << 'EOF'
+
+# Spotify boot primer — backgrounds and waits for port 8200
+/mnt/nv/bin/spotify-boot-primer &
+EOF
+```
+
+If you don't have an `rc.local` yet, create one:
+
+```sh
+ssh root@<speaker-ip> 'cat > /mnt/nv/rc.local' << 'EOF'
+#!/bin/bash
+/mnt/nv/bin/spotify-boot-primer &
+EOF
+ssh root@<speaker-ip> chmod +x /mnt/nv/rc.local
+```
+
+### 4. Set up PATH for interactive SSH (optional)
+
+This lets you run `spotify-boot-primer` directly from an SSH session:
+
+```sh
+ssh root@<speaker-ip> 'cat > /mnt/nv/.profile' << 'EOF'
+export PATH="/mnt/nv/bin:$PATH"
+EOF
+```
+
+### 5. Test it
+
+```sh
+# Manual test (speaker must be running):
+ssh root@<speaker-ip> /mnt/nv/bin/spotify-boot-primer
+
+# Check logs:
+ssh root@<speaker-ip> 'logread | grep spotify-primer'
+
+# Full test — reboot and verify:
+echo "sys reboot" | nc -w 5 <speaker-ip> 17000
+# Wait ~30 seconds, then:
+ssh root@<speaker-ip> 'logread | grep spotify-primer'
+ssh root@<speaker-ip> 'curl -s "http://localhost:8200/zc?action=getInfo"'
+# Look for "activeUser" in the output
+```
+
+### Example boot log
+
+```
+spotify-primer[1735]: Config loaded (server=https://soundcork.example.com)
+spotify-primer[1735]: Waiting for ZeroConf endpoint (max 120s)...
+spotify-primer[1735]: ZeroConf endpoint is up (waited 21s)
+spotify-primer[1735]: Speaker 'Bose-Woonkamer' has no active Spotify user — priming...
+spotify-primer[1735]: Requesting Spotify token from soundcork...
+spotify-primer[1735]: Got token for user {username} (BQDUAb0_2h...)
+spotify-primer[1735]: addUser accepted (status 101) — verifying...
+spotify-primer[1735]: Speaker primed successfully (activeUser={username})
+```
+
+### File layout on the speaker
+
+```
+/mnt/nv/
+  rc.local                                      boot hook (S97)
+  .profile                                      PATH setup for interactive SSH
+  bin/
+    spotify-boot-primer                         main script
+  BoseApp-Persistence/1/
+    spotify-primer.conf                         soundcork credentials (mode 600)
+    Sources.xml, Presets.xml, ...               existing speaker data
+```
+
+### How it works
+
+The speaker's init system runs `shelby_local` at S97, which has a built-in
+hook: `[ -x /mnt/nv/rc.local ] && /mnt/nv/rc.local`. SoundTouch itself starts
+at S99. The primer script backgrounds and waits for the ZeroConf endpoint
+(port 8200) to come up (~20 seconds after boot), then:
+
+1. Fetches a fresh Spotify access token from SoundCork (`GET /mgmt/spotify/token`)
+2. Pushes it to the speaker via `POST localhost:8200/zc` (`addUser`)
+3. Verifies the speaker accepted it (`getInfo` shows `activeUser`)
+
+The script is idempotent — if the speaker is already primed, it exits
+immediately.
+
+### Standalone primer script
+
+For one-off priming from your workstation (without the boot automation), use
+the `scripts/spotify-prime-speaker` script:
+
+```sh
+./scripts/spotify-prime-speaker 192.168.1.143 BQDj...your_access_token...
+```
+
+This requires `curl` and `jq` on your workstation. It discovers the Spotify
+username from the token, checks the speaker's current status, and primes it if
+needed.
+
 ## Warnings
 
 > **Port 17000 (TAP Console)**: The speaker exposes a diagnostic console on

@@ -34,9 +34,17 @@ We'll maintain a forum post with the [Current Status of Bose Cloud Services](htt
 |:--------------------------:|:--------------:|
 | ![Speaker](docs/screenshots/speaker-controls.png) | ![Presets](docs/screenshots/manage-presets.png) |
 
-| Spotify |
-|:-------:|
-| ![Spotify](docs/screenshots/spotify.png) |
+| Preset Detail | Set Spotify Preset |
+|:-------------:|:------------------:|
+| ![Preset Detail](docs/screenshots/preset-detail.png) | ![Spotify Preset](docs/screenshots/edit-spotify-preset.png) |
+
+| Search TuneIn Stations | Station Detail & Save |
+|:----------------------:|:---------------------:|
+| ![TuneIn Search](docs/screenshots/edit-tunein-search.png) | ![TuneIn Detail](docs/screenshots/edit-tunein-detail.png) |
+
+| Internet Radio Preset | Spotify Accounts |
+|:---------------------:|:----------------:|
+| ![Radio Preset](docs/screenshots/edit-radio-preset.png) | ![Spotify](docs/screenshots/spotify.png) |
 
 ## Quick Start
 
