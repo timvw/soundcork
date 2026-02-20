@@ -4,6 +4,7 @@ Used to restrict Bose protocol endpoints to known speakers and to validate
 speaker proxy targets in the webui.
 """
 
+import ipaddress
 import logging
 
 from soundcork.datastore import DataStore
@@ -12,6 +13,28 @@ logger = logging.getLogger(__name__)
 
 # Always allow loopback addresses (local development)
 _LOOPBACK = frozenset({"127.0.0.1", "::1"})
+
+
+_RFC1918_NETWORKS = (
+    ipaddress.IPv4Network("10.0.0.0/8"),
+    ipaddress.IPv4Network("172.16.0.0/12"),
+    ipaddress.IPv4Network("192.168.0.0/16"),
+)
+
+
+def _is_private_ip(ip: str) -> bool:
+    """Check if an IP is in a private RFC1918 range.
+
+    Uses explicit network checks instead of ``ipaddress.is_private`` which
+    is too broad (includes TEST-NET, link-local 169.254, etc.).
+    """
+    try:
+        addr = ipaddress.ip_address(ip)
+    except ValueError:
+        return False
+    if not isinstance(addr, ipaddress.IPv4Address):
+        return False
+    return any(addr in net for net in _RFC1918_NETWORKS)
 
 
 class SpeakerAllowlist:
@@ -59,8 +82,12 @@ class SpeakerAllowlist:
         logger.info("Speaker allowlist refreshed: %d IPs", len(ips))
 
     def is_allowed(self, ip: str) -> bool:
-        """Check if an IP address belongs to a known speaker or loopback."""
-        return ip in _LOOPBACK or ip in self._allowed_ips
+        """Check if an IP belongs to a known speaker, loopback, or private network.
+
+        Private IPs (RFC1918) are allowed because speakers behind NAT appear
+        with the router's LAN IP rather than their own.
+        """
+        return ip in _LOOPBACK or ip in self._allowed_ips or _is_private_ip(ip)
 
     def is_registered_speaker(self, ip: str) -> bool:
         """Check if an IP is a registered speaker (excludes loopback)."""

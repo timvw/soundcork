@@ -86,21 +86,21 @@ class TestBoseProtocolIPRestriction:
     def test_marge_endpoint_blocked_from_unknown_ip(self, client):
         resp = client.get(
             "/marge/streaming/sourceproviders",
-            headers={"X-Forwarded-For": "10.99.99.99"},
+            headers={"X-Forwarded-For": "203.0.113.99"},
         )
         assert resp.status_code == 403
 
     def test_oauth_token_blocked_from_unknown_ip(self, client):
         resp = client.post(
             "/oauth/device/AABBCCDDEEFF/music/musicprovider/15/token/bearer",
-            headers={"X-Forwarded-For": "10.99.99.99"},
+            headers={"X-Forwarded-For": "203.0.113.99"},
         )
         assert resp.status_code == 403
 
     def test_scan_blocked_from_unknown_ip(self, client):
         resp = client.get(
             "/scan",
-            headers={"X-Forwarded-For": "10.99.99.99"},
+            headers={"X-Forwarded-For": "203.0.113.99"},
         )
         assert resp.status_code == 403
 
@@ -112,7 +112,7 @@ class TestBoseProtocolIPRestriction:
         """
         resp = client.get(
             "/webui/",
-            headers={"X-Forwarded-For": "10.99.99.99"},
+            headers={"X-Forwarded-For": "203.0.113.99"},
             follow_redirects=False,
         )
         assert resp.status_code != 403
@@ -121,7 +121,7 @@ class TestBoseProtocolIPRestriction:
         """Mgmt endpoints use their own Basic Auth, not IP restriction."""
         resp = client.get(
             "/mgmt/spotify/accounts",
-            headers={"X-Forwarded-For": "10.99.99.99"},
+            headers={"X-Forwarded-For": "203.0.113.99"},
         )
         # Should get 401 (auth required), not 403 (IP blocked)
         assert resp.status_code == 401
@@ -147,7 +147,7 @@ class TestWebuiSpeakerProxyRestriction:
         assert resp.status_code != 403
 
     def test_speaker_proxy_blocked_for_unregistered_ip(self, authed_client):
-        resp = authed_client.get("/webui/api/speaker/10.99.99.99/info")
+        resp = authed_client.get("/webui/api/speaker/203.0.113.99/info")
         assert resp.status_code == 403
 
     def test_speaker_proxy_blocks_metadata_ip(self, authed_client):
