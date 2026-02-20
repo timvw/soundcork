@@ -30,7 +30,7 @@ import threading
 import time
 import urllib.parse
 import urllib.request
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from soundcork.config import Settings
 from soundcork.datastore import DataStore
@@ -340,11 +340,7 @@ class ZeroConfPrimer:
             # They get re-added automatically when they contact marge
             # or send a power_on event.
             with self._lock:
-                to_remove = [
-                    did
-                    for did, s in self._speakers.items()
-                    if s.prime_failures >= MAX_CONSECUTIVE_FAILURES
-                ]
+                to_remove = [did for did, s in self._speakers.items() if s.prime_failures >= MAX_CONSECUTIVE_FAILURES]
                 for did in to_remove:
                     s = self._speakers.pop(did)
                     logger.warning(

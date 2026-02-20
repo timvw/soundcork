@@ -57,9 +57,7 @@ class SpeakerAllowlist:
                         if not device_id:
                             continue
                         try:
-                            info = self._datastore.get_device_info(
-                                account_id, device_id
-                            )
+                            info = self._datastore.get_device_info(account_id, device_id)
                             if info.ip_address:
                                 ips.add(info.ip_address)
                         except Exception:

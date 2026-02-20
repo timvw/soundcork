@@ -38,7 +38,7 @@ PROVIDERS = [
     "RADIO.COM",
     "RADIO_COM",
     "SIRIUSXM_EVEREST",
-    "RADIO_BROWSER" # https://www.radio-browser.info
+    "RADIO_BROWSER",  # https://www.radio-browser.info
 ]
 
 # where we store associated devices.
@@ -67,5 +67,5 @@ SPEAKER_PRESETS_PATH = "/presets"
 SPEAKER_SOURCES_FILE_LOCATION = "/mnt/nv/BoseApp-Persistence/1/Sources.xml"
 
 # validation
-ACCOUNT_RE = "^\d{1,20}$"
+ACCOUNT_RE = r"^\d{1,20}$"
 DEVICE_RE = "^[0-9a-fA-F]{12}$"

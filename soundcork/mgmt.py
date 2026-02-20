@@ -146,8 +146,7 @@ async def spotify_callback(
     """
     if error:
         return HTMLResponse(
-            content=f"<html><body><h1>Spotify Authorization Failed</h1>"
-            f"<p>Error: {error}</p></body></html>",
+            content=f"<html><body><h1>Spotify Authorization Failed</h1><p>Error: {error}</p></body></html>",
             status_code=400,
         )
 

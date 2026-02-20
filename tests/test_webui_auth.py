@@ -8,7 +8,6 @@ from fastapi.testclient import TestClient
 from soundcork.speaker_allowlist import SpeakerAllowlist
 from soundcork.webui.auth import SessionStore, verify_login
 
-
 # ===================================================================
 # Unit tests for SessionStore
 # ===================================================================
@@ -200,9 +199,7 @@ class TestAuthMiddleware:
         with patch("soundcork.webui.auth.Settings") as MockSettings:
             MockSettings.return_value.mgmt_username = "admin"
             MockSettings.return_value.mgmt_password = "secret"
-            resp = client.post(
-                "/webui/api/login", json={"username": "", "password": ""}
-            )
+            resp = client.post("/webui/api/login", json={"username": "", "password": ""})
         assert resp.status_code == 401
 
     def test_static_css_accessible_without_session(self, client):

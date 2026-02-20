@@ -21,7 +21,6 @@ from soundcork.constants import (
     SPEAKER_HTTP_PORT,
     SPEAKER_PRESETS_PATH,
     SPEAKER_RECENTS_PATH,
-    SPEAKER_SOURCES_FILE_LOCATION,
 )
 from soundcork.datastore import DataStore
 
@@ -58,21 +57,15 @@ def hostname_for_device(device: upnpclient.upnp.Device) -> str:
 
 
 def read_recents(device: upnpclient.upnp.Device) -> str:
-    return read_file_from_speaker_http(
-        hostname_for_device(device), SPEAKER_RECENTS_PATH
-    )
+    return read_file_from_speaker_http(hostname_for_device(device), SPEAKER_RECENTS_PATH)
 
 
 def read_device_info(device: upnpclient.upnp.Device) -> str:
-    return read_file_from_speaker_http(
-        hostname_for_device(device), SPEAKER_DEVICE_INFO_PATH
-    )
+    return read_file_from_speaker_http(hostname_for_device(device), SPEAKER_DEVICE_INFO_PATH)
 
 
 def read_presets(device: upnpclient.upnp.Device) -> str:
-    return read_file_from_speaker_http(
-        hostname_for_device(device), SPEAKER_PRESETS_PATH
-    )
+    return read_file_from_speaker_http(hostname_for_device(device), SPEAKER_PRESETS_PATH)
 
 
 def write_file_to_speaker(filename: str, host: str, remote_path: str) -> None:
@@ -85,18 +78,12 @@ def write_file_to_speaker(filename: str, host: str, remote_path: str) -> None:
     """
     # TODO add timeout handling
     logger.debug(f"copying {filename} to {host}")
-    result = run(
-        SSH_ARGS + [filename, f"root@{host}:{remote_path}"], capture_output=True
-    )
+    result = run(SSH_ARGS + [filename, f"root@{host}:{remote_path}"], capture_output=True)
     if result.returncode:
-        raise RuntimeError(
-            f"something went wrong copying {filename} to {host}: {str(result.stderr)}"
-        )
+        raise RuntimeError(f"something went wrong copying {filename} to {host}: {str(result.stderr)}")
 
 
-def read_file_from_speaker_ssh(
-    filename: str, host: str, remote_path: str, local_path: str
-) -> None:
+def read_file_from_speaker_ssh(filename: str, host: str, remote_path: str, local_path: str) -> None:
     """Read a file from the remote speaker, using ssh.
 
     Unfortunately, the speakers' shell (BusyBox) supports scp but not sftp, while
@@ -106,13 +93,9 @@ def read_file_from_speaker_ssh(
     """
     # TODO add timeout handling
     logger.debug(f"copying {filename} from {host}")
-    result = run(
-        SSH_ARGS + [f"root@{host}:{remote_path}", local_path], capture_output=True
-    )
+    result = run(SSH_ARGS + [f"root@{host}:{remote_path}", local_path], capture_output=True)
     if result.returncode:
-        raise RuntimeError(
-            f"something went wrong copying {filename} from {host}: {str(result.stderr)}"
-        )
+        raise RuntimeError(f"something went wrong copying {filename} from {host}: {str(result.stderr)}")
 
 
 def read_file_from_speaker_http(host: str, path: str) -> str:
@@ -131,9 +114,7 @@ def get_bose_devices() -> list[upnpclient.upnp.Device]:
     devices = upnpclient.discover()
     bose_devices = [d for d in devices if "Bose SoundTouch" in d.model_description]
     logger.info("Discovering upnp devices on the network")
-    logger.info(
-        f'Discovered Bose devices:\n- {"\n- ".join([b.friendly_name for b in bose_devices])}'
-    )
+    logger.info(f"Discovered Bose devices:\n- {'\n- '.join([b.friendly_name for b in bose_devices])}")
     return bose_devices
 
 
@@ -144,7 +125,7 @@ def get_device_by_id(device_id: str) -> Optional[upnpclient.upnp.Device]:
             info_elem = ET.fromstring(read_device_info(device))
             if info_elem.attrib.get("deviceID", "") == device_id:
                 return device
-        except:
+        except Exception:
             pass
     return None
 

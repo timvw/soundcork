@@ -52,9 +52,7 @@ class DataStore:
     def get_device_info(self, account: str, device: str) -> DeviceInfo:
         """Get the device info"""
 
-        stored_tree = ET.parse(
-            path.join(self.account_device_dir(account, device), DEVICE_INFO_FILE)
-        )
+        stored_tree = ET.parse(path.join(self.account_device_dir(account, device), DEVICE_INFO_FILE))
         info_elem = stored_tree.getroot()
         # info_elem = root.find("info")
         device_id = info_elem.attrib.get("deviceID", "")
@@ -72,13 +70,9 @@ class DataStore:
             component_category = strip_element_text(component.find("componentCategory"))
             if component_category == "SCM":
                 firmware_version = strip_element_text(component.find("softwareVersion"))
-                device_serial_number = strip_element_text(
-                    component.find("serialNumber")
-                )
+                device_serial_number = strip_element_text(component.find("serialNumber"))
             elif component_category == "PackagedProduct":
-                product_serial_number = strip_element_text(
-                    component.find("serialNumber")
-                )
+                product_serial_number = strip_element_text(component.find("serialNumber"))
 
         try:
             for network_info in info_elem.findall("networkInfo"):
@@ -99,9 +93,7 @@ class DataStore:
                 name=str(name),
             )
         except NameError:
-            raise RuntimeError(
-                f"There are missing required fields in the device: {device_id}"
-            )
+            raise RuntimeError(f"There are missing required fields in the device: {device_id}")
 
     def save_presets(self, account: str, device: str, presets_list: list[Preset]):
         save_file = path.join(self.account_dir(account), PRESETS_FILE)
@@ -129,9 +121,7 @@ class DataStore:
 
     # TODO: add error handling if you can't write the file
     def save_presets_xml(self, account: str, presets_xml: str):
-        with open(
-            path.join(self.account_dir(account), PRESETS_FILE), "w"
-        ) as presets_file:
+        with open(path.join(self.account_dir(account), PRESETS_FILE), "w") as presets_file:
             presets_file.write(presets_xml)
 
     def get_presets(self, account: str, device: str) -> list[Preset]:
@@ -218,9 +208,7 @@ class DataStore:
 
         return recents
 
-    def save_recents(
-        self, account: str, device: str, recents_list: list[Recent]
-    ) -> ET.Element:
+    def save_recents(self, account: str, device: str, recents_list: list[Recent]) -> ET.Element:
         save_file = path.join(self.account_dir(account), RECENTS_FILE)
         recents_elem = ET.Element("recents")
         for recent in recents_list:
@@ -246,14 +234,10 @@ class DataStore:
 
     # TODO: add error handling if you can't write the file
     def save_recents_xml(self, account: str, recents_xml: str):
-        with open(
-            path.join(self.account_dir(account), RECENTS_FILE), "w"
-        ) as recents_file:
+        with open(path.join(self.account_dir(account), RECENTS_FILE), "w") as recents_file:
             recents_file.write(recents_xml)
 
-    def get_configured_sources(
-        self, account: str, device: str
-    ) -> list[ConfiguredSource]:
+    def get_configured_sources(self, account: str, device: str) -> list[ConfiguredSource]:
         sources_tree = ET.parse(path.join(self.account_dir(account), SOURCES_FILE))
         root = sources_tree.getroot()
         sources_list = []
@@ -289,9 +273,7 @@ class DataStore:
 
     # TODO: add error handling if you can't write the file
     def save_configured_sources_xml(self, account: str, sources_xml: str):
-        with open(
-            path.join(self.account_dir(account), SOURCES_FILE), "w"
-        ) as sources_file:
+        with open(path.join(self.account_dir(account), SOURCES_FILE), "w") as sources_file:
             sources_file.write(sources_xml)
 
     def etag_for_presets(self, account: str) -> int:

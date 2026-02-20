@@ -8,8 +8,7 @@ from http import HTTPStatus
 from typing import Annotated
 
 from fastapi import Depends, FastAPI, HTTPException, Path, Request, Response
-from fastapi.responses import JSONResponse, RedirectResponse
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi_etag import Etag
 
 from soundcork.bmx import (
@@ -114,8 +113,9 @@ from soundcork.proxy import ProxyMiddleware
 
 app.include_router(mgmt_router)
 
-from soundcork.webui.routes import router as webui_router
 from fastapi.staticfiles import StaticFiles
+
+from soundcork.webui.routes import router as webui_router
 
 app.include_router(webui_router)
 app.mount(
@@ -151,11 +151,7 @@ async def log_unknown_requests(request: Request, call_next):
         if settings.log_request_headers:
             headers_str = (
                 " headers={"
-                + ", ".join(
-                    f"{k}: {v}"
-                    for k, v in request.headers.items()
-                    if k.lower() not in ("host",)
-                )
+                + ", ".join(f"{k}: {v}" for k, v in request.headers.items() if k.lower() not in ("host",))
                 + "}"
             )
         logger.info(
@@ -212,7 +208,7 @@ async def speaker_ip_restriction(request: Request, call_next):
 # --- WebUI session auth middleware ---
 # All /webui/* paths (except login page and static assets) require a session cookie.
 from soundcork.webui.auth import is_webui_path_public
-from soundcork.webui.routes import _session_store, _SESSION_COOKIE
+from soundcork.webui.routes import _SESSION_COOKIE, _session_store
 
 
 @app.middleware("http")
@@ -594,7 +590,12 @@ def oauth_token_refresh(device_id: str, provider_id: str, token_type: str):
             "access_token": token,
             "token_type": "Bearer",
             "expires_in": 3600,
-            "scope": "streaming user-read-email user-read-private playlist-read-private playlist-read-collaborative user-library-read user-read-playback-state user-modify-playback-state user-read-currently-playing user-read-recently-played",
+            "scope": (
+                "streaming user-read-email user-read-private"
+                " playlist-read-private playlist-read-collaborative user-library-read"
+                " user-read-playback-state user-modify-playback-state"
+                " user-read-currently-playing user-read-recently-played"
+            ),
         }
     )
 
@@ -626,9 +627,7 @@ def streaming_token(device: str, request: Request):
 
 @app.get("/marge/streaming/sourceproviders", tags=["marge"])
 def streamingsourceproviders():
-    return_xml = (
-        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><sourceProviders>'
-    )
+    return_xml = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><sourceProviders>'
     for provider in source_providers():
         return_xml = (
             return_xml
@@ -838,11 +837,9 @@ async def delete_account_device(
     device: Annotated[str, Path(pattern=DEVICE_RE)],
     response: Response,
 ):
-    xml_resp = remove_device_from_account(datastore, account, device)
+    remove_device_from_account(datastore, account, device)
     response.headers["method_name"] = "removeDevice"
-    response.headers["location"] = (
-        f"{settings.base_url}/marge/account/{account}/device/{device}"
-    )
+    response.headers["location"] = f"{settings.base_url}/marge/account/{account}/device/{device}"
     response.body = b""
     response.status_code = HTTPStatus.OK
     return response
@@ -853,9 +850,9 @@ def bmx_services() -> BmxResponse:
 
     with open("bmx_services.json", "r") as file:
         bmx_response_json = file.read()
-        bmx_response_json = bmx_response_json.replace(
-            "{MEDIA_SERVER}", f"{settings.base_url}/media"
-        ).replace("{BMX_SERVER}", settings.base_url)
+        bmx_response_json = bmx_response_json.replace("{MEDIA_SERVER}", f"{settings.base_url}/media").replace(
+            "{BMX_SERVER}", settings.base_url
+        )
         # TODO:  we're sending askAgainAfter hardcoded, but that value actually
         # varies.
         bmx_response = BmxResponse.model_validate_json(bmx_response_json)
@@ -905,9 +902,7 @@ def bmx_orion_playback(data: str) -> BmxPlaybackResponse:
 
 @app.get("/media/{filename}", tags=["bmx"])
 def bmx_media_file(filename: str) -> FileResponse:
-    sanitized_filename = "".join(
-        x for x in filename if x.isalnum() or x == "." or x == "-" or x == "_"
-    )
+    sanitized_filename = "".join(x for x in filename if x.isalnum() or x == "." or x == "-" or x == "_")
     file_path = os.path.join("media", sanitized_filename)
     if os.path.isfile(file_path):
         return FileResponse(file_path)
@@ -944,9 +939,7 @@ def bose_xml_str(xml: ET.Element) -> str:
 ##############################################################################
 
 # --- BMX root-level aliases ---
-app.add_api_route(
-    "/registry/v1/services", bmx_services, methods=["GET"], tags=["bmx-alias"]
-)
+app.add_api_route("/registry/v1/services", bmx_services, methods=["GET"], tags=["bmx-alias"])
 app.add_api_route(
     "/tunein/v1/playback/station/{station_id}",
     bmx_playback,
@@ -985,9 +978,7 @@ app.add_api_route(
     methods=["GET"],
     tags=["marge-alias"],
 )
-app.add_api_route(
-    "/streaming/support/power_on", power_on, methods=["POST"], tags=["marge-alias"]
-)
+app.add_api_route("/streaming/support/power_on", power_on, methods=["POST"], tags=["marge-alias"])
 app.add_api_route(
     "/streaming/device/{device}/streaming_token",
     streaming_token,
@@ -1076,9 +1067,7 @@ app.add_api_route(
     methods=["GET"],
     tags=["marge-alias"],
 )
-app.add_api_route(
-    "/accounts/{account}/full", account_full, methods=["GET"], tags=["marge-alias"]
-)
+app.add_api_route("/accounts/{account}/full", account_full, methods=["GET"], tags=["marge-alias"])
 app.add_api_route(
     "/marge/accounts/{account}/devices/{device}/presets",
     account_presets,

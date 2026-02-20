@@ -32,7 +32,7 @@ def tunein_playback(station_id: str) -> BmxPlaybackResponse:
         body = root.find("body")
         outline = body.find("outline")  # type: ignore
         station_elem = outline.find("station")  # type: ignore
-    except Exception as e:
+    except Exception:
         # TODO narrow this exception
         outline = None
         station_elem = None
@@ -112,9 +112,7 @@ def tunein_podcast_info(podcast_id: str, encoded_name: str) -> BmxPodcastInfoRes
     )
     resp = BmxPodcastInfoResponse(
         links={
-            "self": {
-                "href": f"/v1/playback/episodes/{podcast_id}?encoded_name={encoded_name}"
-            },
+            "self": {"href": f"/v1/playback/episodes/{podcast_id}?encoded_name={encoded_name}"},
         },
         name=name,
         shuffle_disabled=True,
@@ -140,7 +138,7 @@ def tunein_playback_podcast(podcast_id: str) -> BmxPlaybackResponse:
         body = root.find("body")
         outline = body.find("outline")  # type: ignore
         topic = outline.find("topic")  # type: ignore
-    except Exception as e:
+    except Exception:
         # TODO narrow this exception
         outline = None
         topic = None

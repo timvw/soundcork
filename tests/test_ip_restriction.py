@@ -25,9 +25,7 @@ def _make_allowlist(*ips: str) -> SpeakerAllowlist:
     ds = MagicMock()
     ds.list_accounts.return_value = [f"acct{i}" for i in range(len(ips))]
     ds.list_devices.side_effect = [[f"DEV{i:010d}00"] for i in range(len(ips))]
-    ds.get_device_info.side_effect = [
-        _make_device_info(ip, f"DEV{i:010d}00") for i, ip in enumerate(ips)
-    ]
+    ds.get_device_info.side_effect = [_make_device_info(ip, f"DEV{i:010d}00") for i, ip in enumerate(ips)]
     return SpeakerAllowlist(ds)
 
 

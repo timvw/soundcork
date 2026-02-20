@@ -205,9 +205,7 @@ class ProxyMiddleware(BaseHTTPMiddleware):
             return await self._log_local(request, call_next)
 
         upstream_base, prefix = match
-        return await self._forward_with_fallback(
-            request, call_next, upstream_base, prefix
-        )
+        return await self._forward_with_fallback(request, call_next, upstream_base, prefix)
 
     async def _log_local(
         self,
@@ -295,9 +293,7 @@ class ProxyMiddleware(BaseHTTPMiddleware):
 
         # Try the upstream
         method = request.method
-        fwd_headers = {
-            k: v for k, v in request.headers.items() if k.lower() not in HOP_BY_HOP
-        }
+        fwd_headers = {k: v for k, v in request.headers.items() if k.lower() not in HOP_BY_HOP}
         req_body = await request.body()
 
         try:
@@ -379,9 +375,7 @@ class ProxyMiddleware(BaseHTTPMiddleware):
 
         # Strip content-encoding/content-length since httpx already decoded
         excluded = {"content-encoding", "content-length", "transfer-encoding"}
-        return_headers = {
-            k: v for k, v in resp_headers.items() if k.lower() not in excluded
-        }
+        return_headers = {k: v for k, v in resp_headers.items() if k.lower() not in excluded}
 
         return Response(
             content=resp_body,

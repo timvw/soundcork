@@ -37,9 +37,7 @@ default_datestr = "2012-09-19T12:43:00.000+00:00"
 
 def source_providers() -> list[SourceProvider]:
     return [
-        SourceProvider(
-            id=i[0], created_on=default_datestr, name=i[1], updated_on=default_datestr
-        )
+        SourceProvider(id=i[0], created_on=default_datestr, name=i[1], updated_on=default_datestr)
         for i in enumerate(PROVIDERS, start=1)
     ]
 
@@ -50,12 +48,12 @@ def preset_xml(preset: Preset, conf_sources_list: list[ConfiguredSource]) -> ET.
 
     try:
         created_on = datetime.fromtimestamp(int(preset.created_on), timezone.utc).isoformat()  # type: ignore
-    except:
+    except (ValueError, TypeError, OSError):
         created_on = default_datestr
 
     try:
         updated_on = datetime.fromtimestamp(int(preset.updated_on), timezone.utc).isoformat()  # type: ignore
-    except:
+    except (ValueError, TypeError, OSError):
         updated_on = default_datestr
 
     ET.SubElement(preset_element, "containerArt").text = preset.container_art
@@ -146,9 +144,7 @@ def content_item_source_xml(
 ) -> ET.Element:
     if content_item.source_id:
         try:
-            matching_src = next(
-                cs for cs in configured_sources if cs.id == content_item.source_id
-            )
+            matching_src = next(cs for cs in configured_sources if cs.id == content_item.source_id)
         except StopIteration:
             print(f"invalid source for content_item.source_id {content_item.source_id}")
             raise HTTPException(status_code=400, detail="Invalid source")
@@ -165,9 +161,7 @@ def content_item_source_xml(
             )
         )
     except StopIteration:
-        print(
-            f"invalid source for source key {content_item.source} account {content_item.source_account}"
-        )
+        print(f"invalid source for source key {content_item.source} account {content_item.source_account}")
         raise HTTPException(status_code=400, detail="Invalid source")
     return configured_source_xml(matching_src)
 
@@ -193,9 +187,7 @@ def configured_source_xml(conf_source: ConfiguredSource) -> ET.Element:
     # for Spotify). The speaker firmware may handle different types differently.
     credential.attrib["type"] = conf_source.secret_type or "token"
     ET.SubElement(source, "name").text = conf_source.source_key_account
-    ET.SubElement(source, "sourceproviderid").text = str(
-        PROVIDERS.index(conf_source.source_key_type) + 1
-    )
+    ET.SubElement(source, "sourceproviderid").text = str(PROVIDERS.index(conf_source.source_key_type) + 1)
     ET.SubElement(source, "sourcename").text = conf_source.display_name
     ET.SubElement(source, "sourcesettings")
     ET.SubElement(source, "updatedOn").text = default_datestr
@@ -217,13 +209,11 @@ def recents_xml(
 
     recents_element = ET.Element("recents")
     for recent in recents_list:
-        lastplayed = datetime.fromtimestamp(
-            int(recent.utc_time), timezone.utc
-        ).isoformat()
+        lastplayed = datetime.fromtimestamp(int(recent.utc_time), timezone.utc).isoformat()
 
         try:
             created_on = datetime.fromtimestamp(int(recent.created_on), timezone.utc).isoformat()  # type: ignore
-        except:
+        except (ValueError, TypeError, OSError):
             created_on = default_datestr
 
         recent_element = ET.SubElement(recents_element, "recent")
@@ -239,9 +229,7 @@ def recents_xml(
     return recents_element
 
 
-def add_recent(
-    datastore: "DataStore", account: str, device: str, source_xml: bytes
-) -> ET.Element:
+def add_recent(datastore: "DataStore", account: str, device: str, source_xml: bytes) -> ET.Element:
     conf_sources_list = datastore.get_configured_sources(account, device)
     recents_list = datastore.get_recents(account, device)
 
@@ -277,9 +265,7 @@ def add_recent(
         (
             i
             for i in recents_list
-            if i.source == source
-            and i.location == location
-            and i.source_account == source_account
+            if i.source == source and i.location == location and i.source_account == source_account
         ),
         None,
     )
@@ -306,9 +292,7 @@ def add_recent(
             source_account=source_account,
             is_presetable=is_presetable,
         )
-        created_on = datetime.fromtimestamp(
-            datetime.now().timestamp(), timezone.utc
-        ).isoformat()
+        created_on = datetime.fromtimestamp(datetime.now().timestamp(), timezone.utc).isoformat()
 
         recents_list.insert(0, recent_obj)
         # probably shouldn't just let this grow unbounded
@@ -316,9 +300,7 @@ def add_recent(
 
     datastore.save_recents(account, device, recents_list)
 
-    lastplayed = datetime.fromtimestamp(
-        int(recent_obj.utc_time), timezone.utc
-    ).isoformat()
+    lastplayed = datetime.fromtimestamp(int(recent_obj.utc_time), timezone.utc).isoformat()
 
     # return newly created or updated element in return-value xml format
     # TODO reuse code from recents_xml()
@@ -367,9 +349,7 @@ def _inject_spotify_token(
     """
     result = []
     for cs in configured_sources:
-        if cs.source_key_type == "SPOTIFY" and (
-            spotify_user_id is None or cs.source_key_account == spotify_user_id
-        ):
+        if cs.source_key_type == "SPOTIFY" and (spotify_user_id is None or cs.source_key_account == spotify_user_id):
             logger.info(
                 "Injecting Spotify token for account %s",
                 cs.source_key_account,
@@ -415,24 +395,16 @@ def account_full_xml(account: str, datastore: "DataStore") -> ET.Element:
         attached_product_elem.attrib["product_code"] = device_info.product_code
         # some devices seem to have components but i don't know they're important
         ET.SubElement(attached_product_elem, "components")
-        ET.SubElement(
-            attached_product_elem, "productlabel"
-        ).text = device_info.product_code
-        ET.SubElement(
-            attached_product_elem, "serialnumber"
-        ).text = device_info.product_serial_number
+        ET.SubElement(attached_product_elem, "productlabel").text = device_info.product_code
+        ET.SubElement(attached_product_elem, "serialnumber").text = device_info.product_serial_number
         ET.SubElement(device_elem, "createdOn").text = default_datestr
 
-        ET.SubElement(
-            device_elem, "firmwareVersion"
-        ).text = device_info.firmware_version
+        ET.SubElement(device_elem, "firmwareVersion").text = device_info.firmware_version
         ET.SubElement(device_elem, "ipaddress").text = device_info.ip_address
         ET.SubElement(device_elem, "name").text = device_info.name
         device_elem.append(presets_xml(datastore, account, device_id, conf_sources))
         device_elem.append(recents_xml(datastore, account, device_id, conf_sources))
-        ET.SubElement(
-            device_elem, "serialnumber"
-        ).text = device_info.device_serial_number
+        ET.SubElement(device_elem, "serialnumber").text = device_info.device_serial_number
         ET.SubElement(device_elem, "updatedOn").text = default_datestr
 
     ET.SubElement(account_elem, "mode").text = "global"
@@ -464,9 +436,7 @@ def software_update_xml() -> ET.Element:
     return su
 
 
-def add_device_to_account(
-    datastore: "DataStore", account: str, source_xml: str
-) -> tuple[str, ET.Element]:
+def add_device_to_account(datastore: "DataStore", account: str, source_xml: str) -> tuple[str, ET.Element]:
 
     new_device_elem = ET.fromstring(source_xml)
     device_id = new_device_elem.attrib.get("deviceid", "")
@@ -478,9 +448,7 @@ def add_device_to_account(
     device_xml = read_device_info(device)
     datastore.add_device(account, device_id, device_xml)
 
-    created_on = datetime.fromtimestamp(
-        datetime.now().timestamp(), timezone.utc
-    ).isoformat()
+    created_on = datetime.fromtimestamp(datetime.now().timestamp(), timezone.utc).isoformat()
 
     return_elem = ET.Element("device")
     return_elem.attrib["deviceid"] = device_id

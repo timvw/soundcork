@@ -1,8 +1,6 @@
 """Tests for the SpeakerAllowlist class."""
 
-from unittest.mock import MagicMock, patch
-
-import pytest
+from unittest.mock import MagicMock
 
 from soundcork.model import DeviceInfo
 from soundcork.speaker_allowlist import SpeakerAllowlist

@@ -53,9 +53,7 @@ class Id(BaseModel):
 
 
 class Service(BaseModel):
-    links: Optional[Links] = Field(
-        default=None, alias="_links", serialization_alias="_links"
-    )
+    links: Optional[Links] = Field(default=None, alias="_links", serialization_alias="_links")
     askAdapter: bool
     assets: Asset
     baseUrl: str
@@ -66,17 +64,13 @@ class Service(BaseModel):
 
 
 class BmxResponse(BaseModel):
-    links: Optional[Links] = Field(
-        default=None, alias="_links", serialization_alias="_links"
-    )
+    links: Optional[Links] = Field(default=None, alias="_links", serialization_alias="_links")
     askAgainAfter: int
     bmx_services: list[Service]
 
 
 class Stream(BaseModel):
-    links: Optional[Links] = Field(
-        default=None, alias="_links", serialization_alias="_links"
-    )
+    links: Optional[Links] = Field(default=None, alias="_links", serialization_alias="_links")
     bufferingTimeout: Optional[int] = None
     connectingTimeout: Optional[int] = None
     hasPlaylist: bool

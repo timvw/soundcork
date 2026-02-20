@@ -28,9 +28,7 @@ SPOTIFY_SCOPES = "streaming user-read-private user-read-email user-read-playback
 class SpotifyService:
     def __init__(self):
         self._settings = Settings()
-        self._accounts_file = os.path.join(
-            self._settings.data_dir, "spotify", "accounts.json"
-        )
+        self._accounts_file = os.path.join(self._settings.data_dir, "spotify", "accounts.json")
 
     def _ensure_spotify_dir(self):
         """Create the spotify data directory if it doesn't exist."""
@@ -69,9 +67,7 @@ class SpotifyService:
         }
         return f"{SPOTIFY_AUTHORIZE_URL}?{urllib.parse.urlencode(params)}"
 
-    async def exchange_code_and_store(
-        self, code: str, redirect_uri: str | None = None
-    ) -> dict:
+    async def exchange_code_and_store(self, code: str, redirect_uri: str | None = None) -> dict:
         """Exchange an authorization code for tokens and store the account.
 
         Args:
@@ -102,9 +98,7 @@ class SpotifyService:
 
         # Upsert into accounts list (replace if same user ID exists)
         accounts = self._load_accounts()
-        accounts = [
-            a for a in accounts if a["spotifyUserId"] != account["spotifyUserId"]
-        ]
+        accounts = [a for a in accounts if a["spotifyUserId"] != account["spotifyUserId"]]
         accounts.append(account)
         self._save_accounts(accounts)
 

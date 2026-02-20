@@ -285,11 +285,9 @@ async def discover_speakers():
 async def proxy_mgmt_get(path: str, request: Request):
     """Proxy GET requests to the management API with server-side auth."""
     if not _is_allowed_mgmt_path(path):
-        return JSONResponse(
-            {"detail": "Forbidden: mgmt path not allowed"}, status_code=403
-        )
+        return JSONResponse({"detail": "Forbidden: mgmt path not allowed"}, status_code=403)
     params = dict(request.query_params)
-    base = _settings.base_url or f"http://localhost:8000"
+    base = _settings.base_url or "http://localhost:8000"
     auth = httpx.BasicAuth(_settings.mgmt_username, _settings.mgmt_password)
     try:
         async with httpx.AsyncClient() as client:
@@ -302,9 +300,7 @@ async def proxy_mgmt_get(path: str, request: Request):
         return Response(
             content=resp.content,
             status_code=resp.status_code,
-            headers={
-                "Content-Type": resp.headers.get("content-type", "application/json")
-            },
+            headers={"Content-Type": resp.headers.get("content-type", "application/json")},
         )
     except (httpx.ConnectError, httpx.TimeoutException) as e:
         logger.warning(f"Mgmt proxy error: {e}")
@@ -315,12 +311,10 @@ async def proxy_mgmt_get(path: str, request: Request):
 async def proxy_mgmt_post(path: str, request: Request):
     """Proxy POST requests to the management API with server-side auth."""
     if not _is_allowed_mgmt_path(path):
-        return JSONResponse(
-            {"detail": "Forbidden: mgmt path not allowed"}, status_code=403
-        )
+        return JSONResponse({"detail": "Forbidden: mgmt path not allowed"}, status_code=403)
     body = await request.body()
     content_type = request.headers.get("content-type", "application/json")
-    base = _settings.base_url or f"http://localhost:8000"
+    base = _settings.base_url or "http://localhost:8000"
     auth = httpx.BasicAuth(_settings.mgmt_username, _settings.mgmt_password)
     try:
         async with httpx.AsyncClient() as client:
@@ -334,9 +328,7 @@ async def proxy_mgmt_post(path: str, request: Request):
         return Response(
             content=resp.content,
             status_code=resp.status_code,
-            headers={
-                "Content-Type": resp.headers.get("content-type", "application/json")
-            },
+            headers={"Content-Type": resp.headers.get("content-type", "application/json")},
         )
     except (httpx.ConnectError, httpx.TimeoutException) as e:
         logger.warning(f"Mgmt proxy error: {e}")
@@ -352,9 +344,7 @@ async def proxy_mgmt_post(path: str, request: Request):
 async def proxy_speaker_get(ip: str, path: str):
     """Proxy GET requests to a speaker on the LAN."""
     if not _get_speaker_allowlist().is_registered_speaker(ip):
-        return JSONResponse(
-            {"detail": "Forbidden: unregistered speaker IP"}, status_code=403
-        )
+        return JSONResponse({"detail": "Forbidden: unregistered speaker IP"}, status_code=403)
     try:
         async with httpx.AsyncClient() as client:
             resp = await client.get(
@@ -376,18 +366,14 @@ async def proxy_speaker_get(ip: str, path: str):
 async def proxy_speaker_post(ip: str, path: str, request: Request):
     """Proxy POST requests to a speaker on the LAN."""
     if not _get_speaker_allowlist().is_registered_speaker(ip):
-        return JSONResponse(
-            {"detail": "Forbidden: unregistered speaker IP"}, status_code=403
-        )
+        return JSONResponse({"detail": "Forbidden: unregistered speaker IP"}, status_code=403)
     body = await request.body()
     try:
         async with httpx.AsyncClient() as client:
             resp = await client.post(
                 f"http://{ip}:{SPEAKER_PORT}/{path}",
                 content=body,
-                headers={
-                    "Content-Type": request.headers.get("content-type", "text/xml")
-                },
+                headers={"Content-Type": request.headers.get("content-type", "text/xml")},
                 timeout=SPEAKER_TIMEOUT,
             )
         return Response(
@@ -421,9 +407,7 @@ async def proxy_image(url: str):
     if not url.startswith(("http://", "https://")):
         return Response(content="Invalid URL", status_code=400)
     if not _is_allowed_image_url(url):
-        return JSONResponse(
-            {"detail": "Forbidden: URL domain not allowed"}, status_code=403
-        )
+        return JSONResponse({"detail": "Forbidden: URL domain not allowed"}, status_code=403)
     try:
         async with httpx.AsyncClient(follow_redirects=True) as client:
             resp = await client.get(url, timeout=SPEAKER_TIMEOUT)
@@ -498,9 +482,7 @@ async def proxy_speaker_websocket(websocket: WebSocket, ip: str):
     await websocket.accept(subprotocol="gabbo")
     speaker_uri = f"ws://{ip}:{SPEAKER_WS_PORT}"
     try:
-        async with websockets.connect(
-            speaker_uri, subprotocols=["gabbo"]
-        ) as speaker_ws:
+        async with websockets.connect(speaker_uri, subprotocols=["gabbo"]) as speaker_ws:
 
             async def browser_to_speaker():
                 try:
