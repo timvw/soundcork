@@ -184,10 +184,12 @@ async def speaker_ip_restriction(request: Request, call_next):
     if path == "/" or any(path.startswith(p) for p in _EXEMPT_PREFIXES):
         return await call_next(request)
 
-    # Determine client IP: trust X-Forwarded-For (behind ingress/proxy)
+    # Determine client IP from X-Forwarded-For (behind ingress/proxy).
+    # Take the LAST value: the reverse proxy (Traefik) appends the real client
+    # IP as the rightmost entry.  Earlier entries are attacker-controlled.
     forwarded = request.headers.get("x-forwarded-for")
     if forwarded:
-        client_ip = forwarded.split(",")[0].strip()
+        client_ip = forwarded.split(",")[-1].strip()
     else:
         client_ip = request.client.host if request.client else ""
 
