@@ -74,6 +74,14 @@ def get_speaker_allowlist() -> SpeakerAllowlist:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("Starting up soundcork")
+
+    # Refuse to start with default credentials
+    if settings.mgmt_password == "change_me!":
+        raise RuntimeError(
+            "MGMT_PASSWORD is still the default 'change_me!'. "
+            "Set a strong password via environment variable or .env.private."
+        )
+
     # Initialise speaker allowlist at startup
     get_speaker_allowlist()
     logger.info("done starting up server")
