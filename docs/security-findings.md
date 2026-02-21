@@ -15,64 +15,43 @@ Traefik on a single-node Kubernetes cluster.
 
 ### C-1: X-Forwarded-For Spoofing Bypasses IP Restriction
 
-- **Status:** [ ] Open
+- **Status:** [x] Fixed (2026-02-21, commit `70c5fb6`)
 - **Location:** `soundcork/main.py:187-192`
-- **Prerequisite:** Requires C-2 (blanket RFC1918 allow) to be exploitable from the internet.
-  Also requires fixing `externalTrafficPolicy` (see C-5) first, since currently
-  all traffic arrives as `192.168.1.200` regardless of source.
 
-The middleware takes the **first** value from `X-Forwarded-For`:
-
-```python
-client_ip = forwarded.split(",")[0].strip()
-```
-
-Traefik **appends** the real client IP, so an attacker controls the first value.
-Any internet client can send `X-Forwarded-For: 192.168.1.1` to impersonate a
-LAN device.
-
-**Fix:** Take the last (rightmost) value — that is the one Traefik appends:
-
-```python
-client_ip = forwarded.split(",")[-1].strip()
-```
+Changed `split(",")[0]` to `split(",")[-1]` so the middleware uses the
+rightmost (Traefik-appended) XFF value instead of the attacker-controlled first
+value. Added regression tests for XFF spoofing. Required C-5 as a prerequisite.
 
 ### C-2: All RFC1918 Private IPs Bypass Speaker Allowlist
 
-- **Status:** [ ] Open
+- **Status:** [ ] Open (de-risked by C-1 + C-5 fixes)
 - **Location:** `soundcork/speaker_allowlist.py:82-88`
 
 ```python
 return ip in _LOOPBACK or ip in self._allowed_ips or _is_private_ip(ip)
 ```
 
-Any RFC1918 address is auto-allowed. Combined with C-1 this defeats the entire
-IP restriction from the internet. Even without C-1, every device on the LAN
-(not just speakers) can access all Bose protocol endpoints.
+Any RFC1918 address is auto-allowed. With C-1 fixed, internet attackers can no
+longer spoof private IPs, so this is now a LAN-only exposure (any device on the
+home network can access Bose protocol endpoints).
 
-**Fix:** Remove `_is_private_ip(ip)` from `is_allowed()`. Speakers are on the
-same subnet and their IPs are registered in the datastore, so they match via
-`self._allowed_ips` directly:
+**Cannot remove `_is_private_ip()` as originally planned:** testing revealed the
+speaker appears as `192.168.0.1` in XFF (NAT/routing between speaker subnet and
+k8s node), not its registered IP `192.168.1.143`. Removing the private IP
+fallback would break speaker traffic.
 
-```python
-return ip in _LOOPBACK or ip in self._allowed_ips
-```
+**Future fix:** Investigate the `192.168.0.1` routing path. Alternatively, add
+a configurable `allowed_subnets` setting to restrict which private ranges are
+accepted, instead of allowing all RFC1918.
 
 ### C-3: Default Management Credentials
 
-- **Status:** [ ] Open (mitigated in deployment via K8s Secret)
-- **Location:** `soundcork/config.py:27-28`
+- **Status:** [x] Fixed (2026-02-21, commit `02f9603`)
+- **Location:** `soundcork/main.py` lifespan, `soundcork/config.py:27-28`
 
-```python
-mgmt_username: str = "admin"
-mgmt_password: str = "change_me!"
-```
-
-If the K8s Secret is missing or misconfigured, the server silently falls back to
-well-known credentials.
-
-**Fix:** Validate at startup that credentials are not the defaults. Refuse to
-start if `mgmt_password == "change_me!"` or is empty.
+Server now raises `RuntimeError` during startup if `MGMT_PASSWORD` is still the
+default `change_me!`. Prevents silent fallback to well-known credentials when
+the K8s Secret is missing or misconfigured.
 
 ### C-4: Container Runs as Root
 
@@ -85,23 +64,12 @@ Added non-root user (UID 1000), `securityContext` with `runAsNonRoot`,
 
 ### C-5: externalTrafficPolicy: Cluster Loses Real Client IPs
 
-- **Status:** [ ] Open
+- **Status:** [x] Fixed (2026-02-21, icteam-k8s commit `dae1b6a`)
 - **Location:** `icteam-k8s traefik Helm values`
 
-With `externalTrafficPolicy: Cluster`, kube-proxy SNATs all traffic. Traefik
-sees the node IP (`192.168.1.200`) for every request regardless of source. The
-IP restriction middleware cannot distinguish speakers from internet attackers.
-
-**Fix:** Set `externalTrafficPolicy: Local` on the Traefik service. On a
-single-node cluster there is zero downside. This must be deployed **before**
-C-1 and C-2 fixes, otherwise all traffic breaks.
-
-```yaml
-service:
-  spec:
-    loadBalancerIP: 192.168.1.200
-    externalTrafficPolicy: Local
-```
+Set `externalTrafficPolicy: Local` on the Traefik service. Verified real client
+IPs now appear in XFF headers (public IPs for internet traffic, LAN IPs for
+local traffic). Prerequisite for C-1.
 
 ---
 
@@ -384,17 +352,19 @@ tag or digest pinning.
 
 ## Remediation Priority
 
-The fixes should be applied in this order due to dependencies:
+Completed:
+- [x] **C-4** — container runs as non-root (2026-02-20)
+- [x] **C-5** — externalTrafficPolicy: Local (2026-02-21)
+- [x] **C-1** — XFF spoofing fix (2026-02-21)
+- [x] **C-3** — startup credential validation (2026-02-21)
 
-1. **C-5** (externalTrafficPolicy) — must come first, enables real client IP
-   visibility
-2. **C-1 + C-2** (XFF parsing + allowlist) — depends on C-5
-3. **H-2** (XSS) — trivially exploitable, no dependencies
-4. **H-1** (defusedxml) — drop-in replacement
-5. **C-3** (startup validation) — small change
-6. **H-3** (SSRF redirect) — small change
-7. **H-4 + H-5** (bounded sessions/flows) — moderate effort
-8. **H-6** (auth on spotify init) — small change
-9. **H-8** (Traefik middleware) — k8s config only
-10. **M-1 through M-9** — medium effort, lower urgency
-11. **L-1 through L-6** — low effort, low urgency
+Next:
+1. **H-2** (XSS) — trivially exploitable, no dependencies
+2. **H-1** (defusedxml) — drop-in replacement
+3. **H-3** (SSRF redirect) — small change
+4. **H-4 + H-5** (bounded sessions/flows) — moderate effort
+5. **H-6** (auth on spotify init) — small change
+6. **H-8** (Traefik middleware) — k8s config only
+7. **C-2** (allowlist refinement) — investigate 192.168.0.1 routing path
+8. **M-1 through M-9** — medium effort, lower urgency
+9. **L-1 through L-6** — low effort, low urgency
