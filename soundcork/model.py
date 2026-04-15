@@ -80,6 +80,7 @@ class Stream(BaseModel):
 
 
 class Audio(BaseModel):
+    bitrate: Optional[int] = None
     hasPlaylist: bool
     isRealtime: bool
     maxTimeout: Optional[int] = None
