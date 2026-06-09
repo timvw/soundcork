@@ -2,6 +2,7 @@ import json
 import logging
 import os
 import re
+import secrets as _secrets_mod
 import xml.etree.ElementTree as ET
 from contextlib import asynccontextmanager
 from datetime import datetime
@@ -11,7 +12,6 @@ from typing import Annotated
 from fastapi import Depends, FastAPI, HTTPException, Path, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
-from fastapi.staticfiles import StaticFiles
 from fastapi_etag import Etag
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.responses import Response as StarletteResponse
@@ -60,12 +60,14 @@ from soundcork.marge import (
 )
 from soundcork.miniapp import get_miniapp_router
 from soundcork.model import (
+    Audio,
     BmxNavResponse,
     BmxPlaybackResponse,
     BmxPodcastInfoResponse,
     BmxResponse,
     BoseXMLResponse,
     Service,
+    Stream,
 )
 from soundcork.ui.speakers import Speakers
 from soundcork.unhandled_exception_handler import NotFoundHandler
@@ -81,9 +83,38 @@ datastore = DataStore()
 settings = Settings()
 speakers = Speakers(datastore, settings)
 
+from soundcork.speaker_allowlist import SpeakerAllowlist
 from soundcork.spotify_service import SpotifyService
 
 spotify_service = SpotifyService()
+
+_speaker_allowlist: SpeakerAllowlist | None = None
+
+
+def get_speaker_allowlist() -> SpeakerAllowlist:
+    """Return the global speaker allowlist (lazy-init, patchable for tests)."""
+    global _speaker_allowlist
+    if _speaker_allowlist is None:
+        _speaker_allowlist = SpeakerAllowlist(datastore)
+    return _speaker_allowlist
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    logger.info("Starting up soundcork")
+
+    # Refuse to start with default credentials
+    if settings.mgmt_password == "change_me!":
+        raise RuntimeError(
+            "MGMT_PASSWORD is still the default 'change_me!'. "
+            "Set a strong password via environment variable or .env.private."
+        )
+
+    # Initialise speaker allowlist at startup
+    get_speaker_allowlist()
+    logger.info("done starting up server")
+    yield
+    logger.debug("closing server")
 
 
 description = """
@@ -111,9 +142,11 @@ app = FastAPI(
     summary="Emulates SoundTouch servers.",
     version="0.0.1",
     openapi_tags=tags_metadata,
+    lifespan=lifespan,
+    docs_url=None,
+    redoc_url=None,
+    openapi_url=None,
 )
-
-from soundcork.management import router as management_router
 
 origins = [
     "*",
@@ -127,9 +160,163 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.mount("/static", StaticFiles(directory="static"), name="static")
+from fastapi.staticfiles import StaticFiles as _StaticFiles
 
-app.include_router(management_router)
+_static_dir = os.path.join(os.path.dirname(__file__), "static")
+if os.path.isdir(_static_dir):
+    app.mount("/static", _StaticFiles(directory=_static_dir), name="static")
+
+from soundcork.mgmt import router as mgmt_router
+from soundcork.proxy import ProxyMiddleware
+
+app.include_router(mgmt_router)
+
+from fastapi.staticfiles import StaticFiles
+
+from soundcork.api.v1 import router as api_v1_router
+from soundcork.oidc import router as oidc_router
+from soundcork.webui.routes import router as webui_router
+
+app.include_router(api_v1_router)
+app.include_router(webui_router)
+app.include_router(oidc_router)
+app.mount(
+    "/webui/static",
+    StaticFiles(directory=os.path.join(os.path.dirname(__file__), "webui", "static")),
+    name="webui_static",
+)
+
+app.add_middleware(ProxyMiddleware)
+
+
+@app.middleware("http")
+async def log_unknown_requests(request: Request, call_next):
+    """Log unknown endpoints (404s) for API research.
+
+    When LOG_REQUEST_BODY / LOG_REQUEST_HEADERS are enabled, body and
+    headers are included in the log line — but only for 404s.  Known
+    endpoints are not logged here (they have their own logging).
+    """
+    body = b""
+    if settings.log_request_body or settings.log_request_headers:
+        body = await request.body()
+
+    response = await call_next(request)
+
+    if response.status_code == 404:
+        query = str(request.url.query)
+        query_str = f"?{query}" if query else ""
+        body_str = ""
+        if settings.log_request_body and body:
+            body_str = " body=" + body[:2000].decode("utf-8", errors="replace")
+        headers_str = ""
+        if settings.log_request_headers:
+            headers_str = (
+                " headers={"
+                + ", ".join(f"{k}: {v}" for k, v in request.headers.items() if k.lower() not in ("host",))
+                + "}"
+            )
+        logger.info(
+            "UNKNOWN %s %s%s [404]%s%s",
+            request.method,
+            request.url.path,
+            query_str,
+            headers_str,
+            body_str,
+        )
+
+    return response
+
+
+# --- Speaker IP restriction middleware ---
+# Bose protocol endpoints are only accessible from registered speaker IPs.
+# Paths starting with /webui, /mgmt, /docs, /openapi.json, or / (root) are exempt.
+
+_EXEMPT_PREFIXES = (
+    "/webui",
+    "/mgmt",
+    "/docs",
+    "/openapi.json",
+    "/auth",
+    "/api",
+    "/soundcloud/playlist/",
+    "/soundcloud/seg/",
+    "/soundcloud/init/",
+    "/soundcloud/playback/",
+)
+
+
+@app.middleware("http")
+async def speaker_ip_restriction(request: Request, call_next):
+    """Block Bose protocol requests from unknown IPs."""
+    path = request.url.path
+
+    # Exempt paths: webui (browser), mgmt (has its own auth), docs, root health
+    if path == "/" or any(path.startswith(p) for p in _EXEMPT_PREFIXES):
+        return await call_next(request)
+
+    # Determine client IP from X-Forwarded-For (behind ingress/proxy).
+    # Take the LAST value: the reverse proxy (Traefik) appends the real client
+    # IP as the rightmost entry.  Earlier entries are attacker-controlled.
+    forwarded = request.headers.get("x-forwarded-for")
+    if forwarded:
+        client_ip = forwarded.split(",")[-1].strip()
+    else:
+        client_ip = request.client.host if request.client else ""
+
+    allowlist = get_speaker_allowlist()
+    if not allowlist.is_allowed(client_ip):
+        logger.warning(
+            "Blocked %s %s from %s (not a registered speaker)",
+            request.method,
+            path,
+            client_ip,
+        )
+        return JSONResponse(
+            {"detail": "Forbidden: unknown speaker IP"},
+            status_code=403,
+        )
+
+    return await call_next(request)
+
+
+# --- WebUI session auth middleware ---
+# All /webui/* paths (except login page and static assets) require a session cookie.
+from soundcork.webui.auth import is_webui_path_public
+from soundcork.webui.routes import _SESSION_COOKIE, _session_store
+
+
+@app.middleware("http")
+async def webui_auth(request: Request, call_next):
+    """Require session auth for all webui endpoints."""
+    path = request.url.path
+
+    # Only apply to /webui paths
+    if not path.startswith("/webui"):
+        return await call_next(request)
+
+    # Public paths (login page, login endpoint, static assets)
+    if is_webui_path_public(path):
+        return await call_next(request)
+
+    # Check session cookie
+    session_id = request.cookies.get(_SESSION_COOKIE, "")
+    csrf_token = _session_store.validate(session_id)
+    if csrf_token is None:
+        # API/WS requests get 401, HTML requests get redirect to login
+        if path.startswith("/webui/api/") or path.startswith("/webui/ws/"):
+            return JSONResponse({"detail": "Authentication required"}, status_code=401)
+        return RedirectResponse(url="/webui/login", status_code=302)
+
+    # CSRF check for mutating methods
+    if request.method in ("POST", "PUT", "DELETE", "PATCH"):
+        # Login endpoint is exempt (no session yet to have a CSRF token)
+        if path != "/webui/api/login":
+            csrf_header = request.headers.get("x-csrf-token", "")
+            if not _secrets_mod.compare_digest(csrf_header, csrf_token):
+                return JSONResponse({"detail": "CSRF token invalid"}, status_code=403)
+
+    return await call_next(request)
 
 
 startup_timestamp = int(datetime.now().timestamp() * 1000)
@@ -137,9 +324,6 @@ startup_timestamp = int(datetime.now().timestamp() * 1000)
 
 @app.get("/")
 def read_root():
-    # kept for posterity
-    # return {"Bose": "Can't Brick Us"}
-
     # if there are speakers that need to be configured default to admin
     all_configured = True
     for speaker in speakers.all_devices().values():
@@ -157,6 +341,11 @@ def read_root():
     tags=["marge"],
 )
 async def power_on(request: Request, response: Response) -> Response:
+    # Spotify priming is handled by the on-speaker boot primer
+    # (/mnt/nv/spotify-boot-primer) which fetches a token from
+    # GET /mgmt/spotify/token and primes locally via ZeroConf.
+    # No server-side priming needed.
+    logger.info("power_on from %s", request.headers.get("x-forwarded-for", "unknown"))
     xml = await request.body()
     account = update_device_poweron(datastore, xml)
     if account:
@@ -179,7 +368,289 @@ def api_versions():
 
 
 @app.post(
-    "/marge/oauth/device/{device_id}/music/musicprovider/{provider_id}/token/{token_type}",
+    "/v1/scmudc/{device_id}",
+    tags=["analytics"],
+    status_code=HTTPStatus.OK,
+)
+async def scmudc_telemetry(device_id: str, request: Request):
+    """Device telemetry event stream (analytics).
+
+    The speaker posts real-time events here: power state changes,
+    playback state, volume changes, source switches, art updates, etc.
+    This is Bose's analytics/telemetry endpoint — equivalent to
+    POST /v1/stapp/{deviceId} used by the mobile app (Stockholm).
+
+    The speaker sends events regardless of whether the server accepts
+    them (fire-and-forget).  Returning 200 OK silences the 404 noise.
+
+    See: https://github.com/gesellix/Bose-SoundTouch/blob/main/docs/reference/CLOUD-API.md
+    """
+    body = await request.body()
+    logger.debug("scmudc event from %s: %s", device_id, body[:500])
+    return Response(status_code=200)
+
+
+##############################################################################
+# Telemetry / analytics stubs
+#
+# These endpoints receive fire-and-forget data from the speaker.  The real
+# Bose servers stored it; we just return 200 OK to prevent 404 log noise.
+##############################################################################
+
+
+@app.post(
+    "/v1/stapp/{device_id}",
+    tags=["analytics"],
+    status_code=HTTPStatus.OK,
+)
+async def stapp_telemetry(device_id: str, request: Request):
+    """SoundTouch app analytics — equivalent to scmudc but used by the mobile app.
+
+    Request format: same JSON envelope/payload as scmudc (already documented in #200).
+    Response: bare 200 OK, no body.  Fire-and-forget.
+    """
+    body = await request.body()
+    logger.debug("stapp event from %s: %s", device_id, body[:500])
+    return Response(status_code=200)
+
+
+@app.post(
+    "/streaming/stats/usage",
+    tags=["analytics"],
+    status_code=HTTPStatus.OK,
+)
+async def streaming_stats_usage(request: Request):
+    """Device usage statistics (play time, source stats, etc.).
+
+    Real server (streaming.bose.com) still alive — returns 400 "Invalid
+    version in header(SOf)" without proper headers.  Request format is
+    XML or JSON with deviceId, accountId, timestamp, eventType, parameters.
+    Response: bare 200 OK, no body.
+
+    Logging enabled to capture actual speaker payloads.
+    """
+    body = await request.body()
+    if body:
+        content_type = request.headers.get("content-type", "")
+        headers = {k: v for k, v in request.headers.items() if k.lower() != "host"}
+        logger.info(
+            "STUB stats/usage content-type=%s headers=%s body=%s",
+            content_type,
+            headers,
+            body[:2000].decode("utf-8", errors="replace"),
+        )
+    return Response(status_code=200)
+
+
+@app.post(
+    "/streaming/stats/error",
+    tags=["analytics"],
+    status_code=HTTPStatus.OK,
+)
+async def streaming_stats_error(request: Request):
+    """Device error statistics (connection failures, codec errors, etc.).
+
+    Request format: XML or JSON with deviceId, errorCode, errorMessage,
+    timestamp, details.  Response: bare 200 OK, no body.
+
+    Logging enabled to capture actual speaker payloads.
+    """
+    body = await request.body()
+    if body:
+        content_type = request.headers.get("content-type", "")
+        headers = {k: v for k, v in request.headers.items() if k.lower() != "host"}
+        logger.info(
+            "STUB stats/error content-type=%s headers=%s body=%s",
+            content_type,
+            headers,
+            body[:2000].decode("utf-8", errors="replace"),
+        )
+    return Response(status_code=200)
+
+
+@app.post(
+    "/bmx/tunein/v1/report",
+    tags=["analytics"],
+    status_code=HTTPStatus.OK,
+)
+async def bmx_tunein_report(request: Request):
+    """TuneIn playback reporting (listen time, station stats).
+
+    Real server (content.api.bose.io) still alive — returns 403
+    "Invalid client id".  Request format unknown.
+
+    Logging enabled to capture actual speaker payloads.
+    """
+    body = await request.body()
+    if body:
+        content_type = request.headers.get("content-type", "")
+        headers = {k: v for k, v in request.headers.items() if k.lower() != "host"}
+        logger.info(
+            "STUB bmx/tunein/report content-type=%s headers=%s body=%s",
+            content_type,
+            headers,
+            body[:2000].decode("utf-8", errors="replace"),
+        )
+    return Response(status_code=200)
+
+
+##############################################################################
+# Customer / account profile
+#
+# Response format aligned with gesellix/Bose-SoundTouch Go implementation:
+# root element <customer>, Content-Type: application/xml.
+# Real Bose server (streaming.bose.com) still returns 406 with ETag —
+# alive but wants a specific Accept header.
+##############################################################################
+
+
+@app.get(
+    "/customer/account/{account}",
+    tags=["customer"],
+)
+def customer_account_profile(account: str):
+    """Returns account profile.  XML root: <customer>."""
+    profile = ET.Element("customer")
+    ET.SubElement(profile, "accountID").text = account
+    ET.SubElement(profile, "email").text = "user@example.com"
+    ET.SubElement(profile, "firstName").text = "SoundTouch"
+    ET.SubElement(profile, "lastName").text = "User"
+    ET.SubElement(profile, "countryCode").text = "US"
+    ET.SubElement(profile, "languageCode").text = "en"
+    ET.SubElement(profile, "street")
+    ET.SubElement(profile, "city")
+    ET.SubElement(profile, "postalCode")
+    ET.SubElement(profile, "state")
+    ET.SubElement(profile, "phone")
+    ET.SubElement(profile, "marketingOptIn").text = "false"
+    xml_str = bose_xml_str(profile)
+    return Response(content=xml_str, media_type="application/xml")
+
+
+@app.post(
+    "/customer/account/{account}",
+    tags=["customer"],
+    status_code=HTTPStatus.OK,
+)
+async def update_customer_account_profile(account: str, request: Request):
+    """Accept account profile update.  Request format unknown — logging."""
+    body = await request.body()
+    if body:
+        content_type = request.headers.get("content-type", "")
+        headers = {k: v for k, v in request.headers.items() if k.lower() != "host"}
+        logger.info(
+            "STUB customer/account/%s (update) content-type=%s headers=%s body=%s",
+            account,
+            content_type,
+            headers,
+            body[:2000].decode("utf-8", errors="replace"),
+        )
+    return Response(status_code=200)
+
+
+@app.post(
+    "/customer/account/{account}/password",
+    tags=["customer"],
+    status_code=HTTPStatus.OK,
+)
+async def change_customer_password(account: str, request: Request):
+    """Accept password change.  Request format unknown — logging."""
+    body = await request.body()
+    if body:
+        content_type = request.headers.get("content-type", "")
+        logger.info(
+            "STUB customer/account/%s/password content-type=%s body=%s",
+            account,
+            content_type,
+            body[:2000].decode("utf-8", errors="replace"),
+        )
+    return Response(status_code=200)
+
+
+##############################################################################
+# Additional marge stubs
+#
+# Endpoints the speaker calls that were missing from soundcork but present
+# in the Go implementation (gesellix/Bose-SoundTouch).
+##############################################################################
+
+
+@app.post(
+    "/marge/streaming/support/customersupport",
+    tags=["marge"],
+    status_code=HTTPStatus.OK,
+)
+async def customer_support_upload(request: Request):
+    """Accept customer support diagnostic upload.
+
+    Go implementation expects <device-data> XML with device info and
+    diagnostic-data (RSSI, gateway IP, MAC addresses, etc.).
+    Response: 200 OK, Content-Type: application/vnd.bose.streaming-v1.2+xml.
+
+    Logging enabled to capture actual speaker payloads.
+    """
+    body = await request.body()
+    if body:
+        content_type = request.headers.get("content-type", "")
+        headers = {k: v for k, v in request.headers.items() if k.lower() != "host"}
+        logger.info(
+            "STUB customersupport content-type=%s headers=%s body=%s",
+            content_type,
+            headers,
+            body[:2000].decode("utf-8", errors="replace"),
+        )
+    return Response(
+        status_code=200,
+        media_type="application/vnd.bose.streaming-v1.2+xml",
+    )
+
+
+@app.get(
+    "/marge/streaming/device_setting/account/{account}/device/{device}/device_settings",
+    tags=["marge"],
+)
+def get_device_settings(account: str, device: str):
+    """Returns device settings.  XML root: <deviceSettings>."""
+    device_settings = ET.Element("deviceSettings")
+    setting = ET.SubElement(device_settings, "deviceSetting")
+    ET.SubElement(setting, "name").text = "CLOCK_FORMAT"
+    ET.SubElement(setting, "value").text = "24HR"
+    xml_str = bose_xml_str(device_settings)
+    return Response(content=xml_str, media_type="application/xml")
+
+
+@app.post(
+    "/marge/streaming/device_setting/account/{account}/device/{device}/device_settings",
+    tags=["marge"],
+    status_code=HTTPStatus.OK,
+)
+async def update_device_settings(account: str, device: str, request: Request):
+    """Accept device settings update.  Request format unknown — logging."""
+    body = await request.body()
+    if body:
+        content_type = request.headers.get("content-type", "")
+        logger.info(
+            "STUB device_settings/%s/%s (update) content-type=%s body=%s",
+            account,
+            device,
+            content_type,
+            body[:2000].decode("utf-8", errors="replace"),
+        )
+    return Response(status_code=200)
+
+
+@app.get(
+    "/marge/streaming/account/{account}/emailaddress",
+    tags=["marge"],
+)
+def get_email_address(account: str):
+    """Returns the account email address.  XML root: <emailAddress>."""
+    xml_str = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><emailAddress>user@example.com</emailAddress>'
+    return Response(content=xml_str, media_type="application/xml")
+
+
+@app.post(
+    "/oauth/device/{device_id}/music/musicprovider/{provider_id}/token/{token_type}",
     tags=["oauth"],
     status_code=HTTPStatus.OK,
 )
@@ -192,8 +663,6 @@ def oauth_token_refresh(device_id: str, provider_id: str, token_type: str):
 
     Only handles provider 15 (Spotify).  Other providers return 404.
     """
-    # TODO:  modify to return amazon token also
-
     if provider_id != "15":
         logger.info(
             "OAuth token request for unsupported provider %s (device=%s)",
@@ -202,9 +671,8 @@ def oauth_token_refresh(device_id: str, provider_id: str, token_type: str):
         )
         return Response(status_code=404)
 
-    # TODO:  use device to determine account, then get by account
-    token_dict = spotify_service.get_fresh_token_sync()
-    if not token_dict:
+    token = spotify_service.get_fresh_token_sync()
+    if not token:
         logger.warning(
             "OAuth token refresh failed — no Spotify token available (device=%s)",
             device_id,
@@ -218,14 +686,49 @@ def oauth_token_refresh(device_id: str, provider_id: str, token_type: str):
         )
 
     logger.info("OAuth token refresh for device %s (provider=Spotify)", device_id)
-    return JSONResponse(content=token_dict)
+    return JSONResponse(
+        content={
+            "access_token": token,
+            "token_type": "Bearer",
+            "expires_in": 3600,
+            "scope": (
+                "streaming user-read-email user-read-private"
+                " playlist-read-private playlist-read-collaborative user-library-read"
+                " user-read-playback-state user-modify-playback-state"
+                " user-read-currently-playing user-read-recently-played"
+            ),
+        }
+    )
+
+
+@app.get(
+    "/marge/streaming/device/{device}/streaming_token",
+    response_class=BoseXMLResponse,
+    tags=["marge"],
+)
+def streaming_token(device: str, request: Request):
+    """Streaming token endpoint.
+
+    Returns a local bearer token matching the gesellix/Bose-SoundTouch
+    Go implementation's st-local-token-{timestamp} pattern. The speaker
+    accepts this for local operation.
+    """
+    token_value = f"st-local-token-{int(datetime.now().timestamp())}"
+    bearer = f"Bearer {token_value}"
+    logger.info("streaming_token request for device %s (returning local token)", device)
+    xml_str = f'<?xml version="1.0" encoding="UTF-8"?><bearertoken value="{bearer}"/>'
+    response = Response(
+        content=xml_str,
+        status_code=200,
+        media_type="application/vnd.bose.streaming-v1.2+xml",
+    )
+    response.headers["Authorization"] = bearer
+    return response
 
 
 @app.get("/marge/streaming/sourceproviders", tags=["marge"])
 def streamingsourceproviders():
-    return_xml = (
-        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><sourceProviders>'
-    )
+    return_xml = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><sourceProviders>'
     for provider in source_providers():
         return_xml = (
             return_xml
@@ -249,7 +752,7 @@ def streamingsourceproviders():
     response.headers["content-type"] = "application/vnd.bose.streaming-v1.2+xml"
     # sourceproviders seems to return now as its etag
     etag = int(datetime.now().timestamp() * 1000)
-    response.headers["etag"] = str(etag)
+    response.headers["ETag"] = str(etag)
     return response
 
 
@@ -482,7 +985,7 @@ async def post_account_recent(
     "/marge/streaming/account/{account}/device/",
     response_class=BoseXMLResponse,
     tags=["marge"],
-    status_code=HTTPStatus.CREATED,
+    status_code=HTTPStatus.OK,
     dependencies=[
         Depends(
             Etag(
@@ -510,7 +1013,7 @@ async def post_account_device(
     "/marge/streaming/account/{account}/device/{device_id}",
     response_class=BoseXMLResponse,
     tags=["marge"],
-    status_code=HTTPStatus.OK,
+    status_code=HTTPStatus.CREATED,
     dependencies=[
         Depends(
             Etag(
@@ -540,23 +1043,12 @@ async def delete_account_device(
     device: Annotated[str, Path(pattern=DEVICE_RE)],
     response: Response,
 ):
-    xml_resp = remove_device_from_account(datastore, account, device)
+    remove_device_from_account(datastore, account, device)
     response.headers["method_name"] = "removeDevice"
-    response.headers["location"] = (
-        f"{settings.base_url}/marge/account/{account}/device/{device}"
-    )
+    response.headers["location"] = f"{settings.base_url}/marge/account/{account}/device/{device}"
     response.body = b""
     response.status_code = HTTPStatus.OK
     return response
-
-
-@app.get("/marge/streaming/device/{device_id}/streaming_token", tags=["marge"])
-def streaming_token(device_id: str, response: Response):
-    response.headers["Authorization"] = "c3dvcmRmaXNoCg=="
-    etag = int(datetime.now().timestamp() * 1000)
-    response.headers["ETag"] = str(etag)
-
-    return
 
 
 @app.post("/marge/streaming/account/login", tags=["marge"])
@@ -594,7 +1086,8 @@ async def post_account_login(
     ET.SubElement(account_elem, "mode").text = "global"
     ET.SubElement(account_elem, "preferredLanguage").text = "en"
 
-    return_xml = f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>{ET.tostring(account_elem, encoding="unicode")}'
+    account_str = ET.tostring(account_elem, encoding="unicode")
+    return_xml = f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>{account_str}'
     response = Response(content=return_xml, media_type="application/xml")
     # TODO: move content type to constants
     response.headers["content-type"] = "application/vnd.bose.streaming-v1.2+xml"
@@ -660,9 +1153,7 @@ async def delete_account_source(
 ):
     remove_source_from_account(datastore, account, source_id)
     response.headers["method_name"] = "removeSource"
-    response.headers["location"] = (
-        f"{settings.base_url}/marge/account/{account}/source/{source_id}"
-    )
+    response.headers["location"] = f"{settings.base_url}/marge/account/{account}/source/{source_id}"
     response.body = b""
     response.status_code = HTTPStatus.OK
     return response
@@ -670,7 +1161,6 @@ async def delete_account_source(
 
 @app.get("/bmx/registry/v1/services", response_model_exclude_none=True, tags=["bmx"])
 def bmx_services() -> BmxResponse:
-
     bmx_response_json = bmx_services_json(settings)
 
     # TODO:  we're sending askAgainAfter hardcoded, but that value actually
@@ -697,6 +1187,23 @@ def bmx_tunein() -> Service:
     tags=["bmx"],
 )
 def bmx_playback(station_id: str) -> BmxPlaybackResponse:
+    if station_id.startswith("sc-"):
+        track_id = station_id[3:]
+        _sc_validate_track_id(track_id)
+        info = _sc_ensure_cached(track_id)
+        if not info:
+            raise HTTPException(status_code=404, detail="Track not resolved")
+        info["cursor"] = 0
+        seg_base = os.environ.get("SOUNDCLOUD_SEG_BASE_URL", settings.base_url.rstrip("/"))
+        playlist_url = f"{seg_base}/soundcloud/playlist/{track_id}.m3u8"
+        stream_list = [Stream(hasPlaylist=True, isRealtime=True, streamUrl=playlist_url)]
+        audio = Audio(hasPlaylist=True, isRealtime=True, streamUrl=playlist_url, streams=stream_list)
+        return BmxPlaybackResponse(
+            audio=audio,
+            imageUrl=info.get("thumbnail", ""),
+            name=info.get("title", "SoundCloud"),
+            streamType="liveRadio",
+        )
     return tunein_playback(station_id)
 
 
@@ -776,26 +1283,229 @@ def bmx_local_internet_radio() -> Service:
     return bmx_json_obj["bmx_services"][1]
 
 
-@app.post(
-    "/bmx/tunein/v1/report",
-    status_code=HTTPStatus.OK,
-    tags=["bmx"],
-)
-def bmx_tunein_report(request: Request) -> None:
-    return
-
-
 @app.get("/core02/svc-bmx-adapter-orion/prod/orion/station", tags=["bmx"])
 def custom_stream_playback(request: Request) -> BmxPlaybackResponse:
     data = request.query_params.get("data", "")
     return play_custom_stream(data)
 
 
+# BMX Orion alias — Go registers this as POST, device may use GET or POST
+@app.post("/bmx/orion/v1/playback/station/{data}", tags=["bmx"])
+@app.get("/bmx/orion/v1/playback/station/{data}", tags=["bmx"])
+def bmx_orion_playback(data: str) -> BmxPlaybackResponse:
+    return play_custom_stream(data)
+
+
+# ---------------------------------------------------------------------------
+# SoundCloud — HLS rewriting proxy
+# ---------------------------------------------------------------------------
+# Resolved tracks are cached in-memory so the speaker can fetch segments
+# without re-resolving on every request.  Cache entries expire naturally when
+# the CDN-signed URLs in them become invalid (~2 h).
+
+import hashlib
+import re as _re_mod
+import threading
+import time
+
+from soundcork.soundcloud_service import build_m3u8_window, fetch_segment, resolve_track
+
+_sc_cache: dict[str, dict] = {}
+_SC_CACHE_TTL = 3600  # 1 hour
+_SC_URL_MAP_FILE = os.path.join(os.environ.get("data_dir", "."), "sc_urls.json")
+_sc_file_lock = threading.Lock()
+_SC_TRACK_ID_RE = _re_mod.compile(r"^[0-9a-f]{16}$")
+
+
+def _sc_track_id(url: str) -> str:
+    return hashlib.sha256(url.encode()).hexdigest()[:16]
+
+
+def _sc_validate_track_id(track_id: str) -> None:
+    if not _SC_TRACK_ID_RE.match(track_id):
+        raise HTTPException(status_code=400, detail="Invalid track ID")
+
+
+def _sc_load_url_map() -> dict[str, str]:
+    try:
+        with open(_SC_URL_MAP_FILE) as f:
+            return json.load(f)
+    except (FileNotFoundError, ValueError):
+        return {}
+
+
+def _sc_save_url(track_id: str, url: str) -> None:
+    with _sc_file_lock:
+        url_map = _sc_load_url_map()
+        url_map[track_id] = url
+        dirname = os.path.dirname(_SC_URL_MAP_FILE)
+        if dirname:
+            os.makedirs(dirname, exist_ok=True)
+        with open(_SC_URL_MAP_FILE, "w") as f:
+            json.dump(url_map, f)
+
+
+def _sc_get_or_resolve(soundcloud_url: str) -> tuple[str, dict]:
+    track_id = _sc_track_id(soundcloud_url)
+    cached = _sc_cache.get(track_id)
+    if cached and time.time() - cached["resolved_at"] < _SC_CACHE_TTL:
+        return track_id, cached
+    info = resolve_track(soundcloud_url)
+    info["resolved_at"] = time.time()
+    info["soundcloud_url"] = soundcloud_url
+    _sc_cache[track_id] = info
+    _sc_save_url(track_id, soundcloud_url)
+    return track_id, info
+
+
+def _sc_ensure_cached(track_id: str) -> dict | None:
+    """Return cached info, auto-resolving from persisted URL if needed."""
+    info = _sc_cache.get(track_id)
+    if info and time.time() - info["resolved_at"] < _SC_CACHE_TTL:
+        return info
+    url_map = _sc_load_url_map()
+    url = url_map.get(track_id)
+    if not url:
+        return None
+    logger.info("Auto-resolving SoundCloud track %s from persisted URL", track_id)
+    info = resolve_track(url)
+    info["resolved_at"] = time.time()
+    info["soundcloud_url"] = url
+    _sc_cache[track_id] = info
+    return info
+
+
+@app.get("/soundcloud/resolve", tags=["soundcloud"])
+def sc_resolve(url: str, request: Request):
+    """Resolve a SoundCloud URL and return metadata + playback location."""
+    try:
+        track_id, info = _sc_get_or_resolve(url)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception:
+        logger.exception("SoundCloud resolve failed for URL")
+        raise HTTPException(status_code=502, detail="Failed to resolve SoundCloud URL")
+    base_url = settings.base_url.rstrip("/")
+    playlist_url = f"{base_url}/soundcloud/playlist/{track_id}.m3u8"
+    return {
+        "trackId": track_id,
+        "title": info["title"],
+        "uploader": info["uploader"],
+        "duration": info["duration"],
+        "thumbnail": info["thumbnail"],
+        "playlistUrl": playlist_url,
+        "segmentCount": len(info["segments"]),
+    }
+
+
+@app.get("/soundcloud/playlist/{track_id}.m3u8", tags=["soundcloud"])
+def sc_playlist(track_id: str, request: Request):
+    """Serve a sliding-window HLS playlist with short proxy segment URLs."""
+    _sc_validate_track_id(track_id)
+    info = _sc_ensure_cached(track_id)
+    if not info:
+        raise HTTPException(status_code=404, detail="Track not resolved")
+    seg_base = os.environ.get("SOUNDCLOUD_SEG_BASE_URL", settings.base_url.rstrip("/"))
+    m3u8 = build_m3u8_window(track_id, seg_base, info)
+    return Response(content=m3u8, media_type="audio/mpegurl")
+
+
+@app.head("/soundcloud/seg/{track_id}/{index}", tags=["soundcloud"])
+def sc_segment_head(track_id: str, index: int):
+    """HEAD for segment — returns headers without fetching from CDN."""
+    _sc_validate_track_id(track_id)
+    info = _sc_ensure_cached(track_id)
+    if not info:
+        raise HTTPException(status_code=404, detail="Track not resolved")
+    if index < 0 or index >= len(info["segments"]):
+        raise HTTPException(status_code=404, detail="Segment index out of range")
+    return Response(media_type="audio/mpeg")
+
+
+@app.get("/soundcloud/seg/{track_id}/{index}", tags=["soundcloud"])
+def sc_segment(track_id: str, index: int):
+    """Proxy a single audio segment from SoundCloud's CDN."""
+    _sc_validate_track_id(track_id)
+    info = _sc_ensure_cached(track_id)
+    if not info:
+        raise HTTPException(status_code=404, detail="Track not resolved")
+    segments = info["segments"]
+    if index < 0 or index >= len(segments):
+        raise HTTPException(status_code=404, detail="Segment index out of range")
+    if index >= info.get("cursor", 0):
+        info["cursor"] = index + 1
+    try:
+        _, cdn_url = segments[index]
+        data = fetch_segment(cdn_url)
+    except Exception:
+        logger.exception("Failed to fetch segment %d for track %s", index, track_id)
+        raise HTTPException(status_code=502, detail="Failed to fetch segment")
+    return Response(content=data, media_type="audio/mpeg")
+
+
+@app.head("/soundcloud/init/{track_id}", tags=["soundcloud"])
+def sc_init_segment_head(track_id: str):
+    """HEAD for init segment — returns headers without fetching from CDN."""
+    _sc_validate_track_id(track_id)
+    info = _sc_ensure_cached(track_id)
+    if not info:
+        raise HTTPException(status_code=404, detail="Track not resolved")
+    if not info.get("init_url"):
+        raise HTTPException(status_code=404, detail="No init segment for this track")
+    return Response(media_type="video/mp4")
+
+
+@app.get("/soundcloud/init/{track_id}", tags=["soundcloud"])
+def sc_init_segment(track_id: str):
+    """Proxy the HLS init segment (EXT-X-MAP) for AAC fMP4 streams."""
+    _sc_validate_track_id(track_id)
+    info = _sc_ensure_cached(track_id)
+    if not info:
+        raise HTTPException(status_code=404, detail="Track not resolved")
+    init_url = info.get("init_url")
+    if not init_url:
+        raise HTTPException(status_code=404, detail="No init segment for this track")
+    try:
+        data = fetch_segment(init_url)
+    except Exception:
+        logger.exception("Failed to fetch init segment for track %s", track_id)
+        raise HTTPException(status_code=502, detail="Failed to fetch init segment")
+    return Response(content=data, media_type="video/mp4")
+
+
+@app.get("/soundcloud/playback/{track_id}", tags=["soundcloud"])
+def sc_bmx_playback(track_id: str, request: Request) -> BmxPlaybackResponse:
+    """BMX playback response for SoundCloud — speaker calls this to get the stream URL."""
+    _sc_validate_track_id(track_id)
+    info = _sc_ensure_cached(track_id)
+    if not info:
+        raise HTTPException(status_code=404, detail="Track not resolved")
+    seg_base = os.environ.get("SOUNDCLOUD_SEG_BASE_URL", settings.base_url.rstrip("/"))
+    playlist_url = f"{seg_base}/soundcloud/playlist/{track_id}.m3u8"
+    stream_list = [
+        Stream(
+            hasPlaylist=True,
+            isRealtime=True,
+            streamUrl=playlist_url,
+        )
+    ]
+    audio = Audio(
+        hasPlaylist=True,
+        isRealtime=True,
+        streamUrl=playlist_url,
+        streams=stream_list,
+    )
+    return BmxPlaybackResponse(
+        audio=audio,
+        imageUrl=info.get("thumbnail", ""),
+        name=info.get("title", "SoundCloud"),
+        streamType="liveRadio",
+    )
+
+
 @app.get("/media/{filename}", tags=["bmx"])
 def bmx_media_file(filename: str) -> FileResponse:
-    sanitized_filename = "".join(
-        x for x in filename if x.isalnum() or x == "." or x == "-" or x == "_"
-    )
+    sanitized_filename = "".join(x for x in filename if x.isalnum() or x == "." or x == "-" or x == "_")
     file_path = os.path.join("media", sanitized_filename)
     if os.path.isfile(file_path):
         return FileResponse(file_path)
@@ -816,6 +1526,7 @@ def bmx_siriusxm() -> Service:
 
 
 @app.get("/updates/soundtouch", tags=["swupdate"])
+@app.get("/marge/updates/soundtouch", tags=["swupdate"])
 def sw_update() -> Response:
     with open("swupdate.xml", "r") as file:
         sw_update_response = file.read()
@@ -823,29 +1534,230 @@ def sw_update() -> Response:
         return response
 
 
-@app.post("/v1/scmudc/{deviceid}", tags=["stats"], status_code=HTTPStatus.OK)
-def stats_scmudc(deviceid: str):
-    """Returns 200 for the analytics endpoint.
-
-    This isn't an endpoint we use, but it's noisy when it fails. Return 200.
-    """
-    return
-
-
-@app.post("/v1/stapp/{deviceid}", tags=["stats"], status_code=HTTPStatus.OK)
-def stats_stapp(deviceid: str):
-    """Returns 200 for the analytics endpoint.
-
-    This isn't an endpoint we use, but it's noisy when it fails. Return 200.
-    """
-    return
-
-
 def bose_xml_str(xml: ET.Element) -> str:
     # ET.tostring won't allow you to set standalone="yes"
     return_xml = f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>{ET.tostring(xml, encoding="unicode")}'
 
     return return_xml
+
+
+##############################################################################
+# Root-level aliases (without /marge or /bmx prefix)
+#
+# The Go implementation registers every marge/bmx endpoint twice — once
+# under the prefix and once at the root.  This supports direct-domain
+# calls where the speaker hits streaming.bose.com/accounts/... without
+# the /marge path segment.
+#
+# We use FastAPI's add_api_route to point the alias paths at the same
+# handler functions already defined above.
+##############################################################################
+
+# --- BMX root-level aliases ---
+app.add_api_route("/registry/v1/services", bmx_services, methods=["GET"], tags=["bmx-alias"])
+app.add_api_route(
+    "/tunein/v1/playback/station/{station_id}",
+    bmx_playback,
+    methods=["GET"],
+    tags=["bmx-alias"],
+)
+app.add_api_route(
+    "/tunein/v1/playback/episodes/{episode_id}",
+    bmx_podcast_info,
+    methods=["GET"],
+    tags=["bmx-alias"],
+)
+app.add_api_route(
+    "/tunein/v1/playback/episode/{episode_id}",
+    bmx_playback_podcast,
+    methods=["GET"],
+    tags=["bmx-alias"],
+)
+app.add_api_route(
+    "/orion/v1/playback/station/{data}",
+    bmx_orion_playback,
+    methods=["GET", "POST"],
+    tags=["bmx-alias"],
+)
+
+# --- Marge root-level aliases ---
+app.add_api_route(
+    "/streaming/sourceproviders",
+    streamingsourceproviders,
+    methods=["GET"],
+    tags=["marge-alias"],
+)
+app.add_api_route(
+    "/streaming/account/{account}/full",
+    account_full,
+    methods=["GET"],
+    tags=["marge-alias"],
+)
+app.add_api_route("/streaming/support/power_on", power_on, methods=["POST"], tags=["marge-alias"])
+app.add_api_route(
+    "/streaming/device/{device}/streaming_token",
+    streaming_token,
+    methods=["GET"],
+    tags=["marge-alias"],
+)
+app.add_api_route(
+    "/streaming/account/{account}/device/{device}/presets",
+    account_presets,
+    methods=["GET"],
+    tags=["marge-alias"],
+)
+app.add_api_route(
+    "/streaming/account/{account}/device/{device}/preset/{preset_number}",
+    put_account_preset,
+    methods=["PUT"],
+    tags=["marge-alias"],
+)
+app.add_api_route(
+    "/streaming/account/{account}/device/{device}/recents",
+    account_recents,
+    methods=["GET"],
+    tags=["marge-alias"],
+)
+app.add_api_route(
+    "/streaming/account/{account}/provider_settings",
+    account_provider_settings,
+    methods=["GET"],
+    tags=["marge-alias"],
+)
+app.add_api_route(
+    "/streaming/software/update/account/{account}",
+    software_update,
+    methods=["GET"],
+    tags=["marge-alias"],
+)
+app.add_api_route(
+    "/streaming/account/{account}/device/{device}/recent",
+    post_account_recent,
+    methods=["POST"],
+    tags=["marge-alias"],
+)
+app.add_api_route(
+    "/streaming/account/{account}/device/",
+    post_account_device,
+    methods=["POST"],
+    tags=["marge-alias"],
+)
+app.add_api_route(
+    "/streaming/account/{account}/device/{device}",
+    delete_account_device,
+    methods=["DELETE"],
+    tags=["marge-alias"],
+)
+app.add_api_route(
+    "/streaming/support/customersupport",
+    customer_support_upload,
+    methods=["POST"],
+    tags=["marge-alias"],
+)
+app.add_api_route(
+    "/streaming/device_setting/account/{account}/device/{device}/device_settings",
+    get_device_settings,
+    methods=["GET"],
+    tags=["marge-alias"],
+)
+app.add_api_route(
+    "/streaming/device_setting/account/{account}/device/{device}/device_settings",
+    update_device_settings,
+    methods=["POST"],
+    tags=["marge-alias"],
+)
+app.add_api_route(
+    "/streaming/account/{account}/emailaddress",
+    get_email_address,
+    methods=["GET"],
+    tags=["marge-alias"],
+)
+
+# --- Marge /accounts/ style aliases (gesellix/Bose-SoundTouch path format) ---
+# The Go project registers these shorter paths alongside /streaming/account/ paths.
+# Both path styles should work for maximum speaker firmware compatibility.
+app.add_api_route(
+    "/marge/accounts/{account}/full",
+    account_full,
+    methods=["GET"],
+    tags=["marge-alias"],
+)
+app.add_api_route("/accounts/{account}/full", account_full, methods=["GET"], tags=["marge-alias"])
+app.add_api_route(
+    "/marge/accounts/{account}/devices/{device}/presets",
+    account_presets,
+    methods=["GET"],
+    tags=["marge-alias"],
+)
+app.add_api_route(
+    "/accounts/{account}/devices/{device}/presets",
+    account_presets,
+    methods=["GET"],
+    tags=["marge-alias"],
+)
+app.add_api_route(
+    "/marge/accounts/{account}/devices/{device}/presets/{preset_number}",
+    put_account_preset,
+    methods=["PUT"],
+    tags=["marge-alias"],
+)
+app.add_api_route(
+    "/accounts/{account}/devices/{device}/presets/{preset_number}",
+    put_account_preset,
+    methods=["PUT"],
+    tags=["marge-alias"],
+)
+app.add_api_route(
+    "/marge/accounts/{account}/devices/{device}/recents",
+    account_recents,
+    methods=["GET"],
+    tags=["marge-alias"],
+)
+app.add_api_route(
+    "/accounts/{account}/devices/{device}/recents",
+    account_recents,
+    methods=["GET"],
+    tags=["marge-alias"],
+)
+app.add_api_route(
+    "/marge/accounts/{account}/devices/{device}/recents",
+    post_account_recent,
+    methods=["POST"],
+    tags=["marge-alias"],
+)
+app.add_api_route(
+    "/accounts/{account}/devices/{device}/recents",
+    post_account_recent,
+    methods=["POST"],
+    tags=["marge-alias"],
+)
+app.add_api_route(
+    "/marge/accounts/{account}/devices",
+    post_account_device,
+    methods=["POST"],
+    tags=["marge-alias"],
+)
+app.add_api_route(
+    "/accounts/{account}/devices",
+    post_account_device,
+    methods=["POST"],
+    tags=["marge-alias"],
+)
+app.add_api_route(
+    "/marge/accounts/{account}/devices/{device}",
+    delete_account_device,
+    methods=["DELETE"],
+    tags=["marge-alias"],
+)
+app.add_api_route(
+    "/accounts/{account}/devices/{device}",
+    delete_account_device,
+    methods=["DELETE"],
+    tags=["marge-alias"],
+)
+
+# --- Customer root-level aliases (already at /customer/..., no prefix to strip) ---
+# These are already at root level, no aliases needed.
 
 
 ################## configuration ############
@@ -868,7 +1780,7 @@ def scan_devices():
     for device in devices:
         try:
             info_elem = ET.fromstring(read_device_info(hostname_for_device(device)))
-        except ET.ParseError as e:
+        except ET.ParseError:
             logger.error(
                 f"Failed to read element for\n   Device: {device}\n     Hostname {hostname_for_device(device)}"
             )

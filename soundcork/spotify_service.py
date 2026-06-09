@@ -1,10 +1,7 @@
 """Spotify OAuth and Web API integration.
 
 Handles the authorization code flow, token management, and entity
-resolution for Spotify-connected speakers.
-
-All Spotify functionality is optional -- if SPOTIFY_CLIENT_ID is not
-configured, the management API gracefully disables Spotify endpoints.
+resolution for the ueberboese-app's Spotify features.
 """
 
 import asyncio
@@ -15,47 +12,27 @@ import time
 import urllib.parse
 from datetime import datetime, timezone
 
-# TODO pick one of httpx or requests, and use consistently across the app. If there's no features of httpx
-# in particular this uses, switch to requests.
 import httpx
 
 from soundcork.config import Settings
 
 logger = logging.getLogger(__name__)
 
-# TODO move to constants
 SPOTIFY_AUTHORIZE_URL = "https://accounts.spotify.com/authorize"
 SPOTIFY_TOKEN_URL = "https://accounts.spotify.com/api/token"
 SPOTIFY_API_BASE = "https://api.spotify.com/v1"
 
-# Scopes needed for user profile and entity resolution.
-# Add "streaming" and "user-modify-playback-state" if you plan to
-# control playback via the Spotify Web API.
-SPOTIFY_SCOPES = "user-read-private user-read-email"
-
-# full set of permissions that bose returned; included in case they're
-# needed in the future (like for browse)
-SPOTIFY_SCOPES_FULL = (
-    "streaming user-read-email user-read-private playlist-read-private"
-    " playlist-read-collaborative user-library-read user-read-playback-state"
-    " user-modify-playback-state user-read-currently-playing user-read-recently-played"
-)
+# Scopes needed for streaming playback, user profile, and entity resolution
+SPOTIFY_SCOPES = "streaming user-read-private user-read-email user-read-playback-state user-modify-playback-state"
 
 
 class SpotifyService:
-    """TODO refactor so instead of writing to disk, it relies on either the datastore or storing in memory."""
-
     def __init__(self):
         self._settings = Settings()
-        self._accounts_file = os.path.join(
-            self._settings.data_dir, "spotify", "accounts.json"
-        )
+        self._accounts_file = os.path.join(self._settings.data_dir, "spotify", "accounts.json")
 
     def _ensure_spotify_dir(self):
-        """Create the spotify data directory if it doesn't exist.
-
-        TODO: handle the exceptions on failure
-        """
+        """Create the spotify data directory if it doesn't exist."""
         spotify_dir = os.path.dirname(self._accounts_file)
         os.makedirs(spotify_dir, exist_ok=True)
 
@@ -91,9 +68,7 @@ class SpotifyService:
         }
         return f"{SPOTIFY_AUTHORIZE_URL}?{urllib.parse.urlencode(params)}"
 
-    async def exchange_code_and_store(
-        self, code: str, redirect_uri: str | None = None
-    ) -> dict:
+    async def exchange_code_and_store(self, code: str, redirect_uri: str | None = None) -> dict:
         """Exchange an authorization code for tokens and store the account.
 
         Args:
@@ -103,12 +78,14 @@ class SpotifyService:
 
         Returns the stored account dict.
         """
+        # Exchange code for tokens
         token_data = await self._exchange_code(code, redirect_uri)
 
         access_token = token_data["access_token"]
         refresh_token = token_data.get("refresh_token", "")
         expires_in = token_data.get("expires_in", 3600)
 
+        # Fetch user profile
         profile = await self._get_user_profile(access_token)
 
         account = {
@@ -120,11 +97,9 @@ class SpotifyService:
             "tokenExpiresAt": int(time.time()) + expires_in,
         }
 
-        # Upsert: replace if same user ID already exists
+        # Upsert into accounts list (replace if same user ID exists)
         accounts = self._load_accounts()
-        accounts = [
-            a for a in accounts if a["spotifyUserId"] != account["spotifyUserId"]
-        ]
+        accounts = [a for a in accounts if a["spotifyUserId"] != account["spotifyUserId"]]
         accounts.append(account)
         self._save_accounts(accounts)
 
@@ -176,8 +151,11 @@ class SpotifyService:
 
         return response.json()
 
-    async def _get_valid_token(self) -> dict:
-        """Get a valid access token, refreshing if necessary."""
+    async def _get_valid_token(self) -> str:
+        """Get a valid access token, refreshing if necessary.
+
+        Uses the first stored account's tokens.
+        """
         accounts = self._load_accounts()
         if not accounts:
             raise RuntimeError("No Spotify accounts linked")
@@ -185,6 +163,7 @@ class SpotifyService:
         account = accounts[0]
         now = int(time.time())
 
+        # Refresh if token is expired or about to expire (60s buffer)
         if now >= account.get("tokenExpiresAt", 0) - 60:
             refresh_token = account.get("refreshToken", "")
             if not refresh_token:
@@ -193,23 +172,75 @@ class SpotifyService:
             token_data = await self._refresh_access_token(refresh_token)
             account["accessToken"] = token_data["access_token"]
             account["tokenExpiresAt"] = now + token_data.get("expires_in", 3600)
+            # Spotify may return a new refresh token
             if "refresh_token" in token_data:
                 account["refreshToken"] = token_data["refresh_token"]
             self._save_accounts(accounts)
 
-        return {
-            "access_token": account["accessToken"],
-            "token_type": "Bearer",
-            "expires_in": account["tokenExpiresAt"] - now,
-            "scope": SPOTIFY_SCOPES,
-        }
+        return account["accessToken"]
 
-    def get_fresh_token_sync(self) -> dict:
-        return asyncio.run(self._get_valid_token())
+    def get_fresh_token_sync(self) -> str | None:
+        """Get a valid Spotify access token synchronously.
 
-    def get_spotify_user_id(self) -> str:
+        Used by the marge endpoints (which are sync) to inject fresh
+        tokens into the /full account response for the speaker.
+
+        Returns None if no Spotify account is linked or refresh fails.
+        """
         accounts = self._load_accounts()
-        return accounts[0].get("id", "")
+        if not accounts:
+            return None
+
+        if not self._settings.spotify_client_id:
+            return None
+
+        account = accounts[0]
+        now = int(time.time())
+
+        # Refresh if token is expired or about to expire (60s buffer)
+        if now >= account.get("tokenExpiresAt", 0) - 60:
+            refresh_token = account.get("refreshToken", "")
+            if not refresh_token:
+                logger.warning("No Spotify refresh token available")
+                return None
+
+            try:
+                response = httpx.post(
+                    SPOTIFY_TOKEN_URL,
+                    data={
+                        "grant_type": "refresh_token",
+                        "refresh_token": refresh_token,
+                    },
+                    auth=(
+                        self._settings.spotify_client_id,
+                        self._settings.spotify_client_secret,
+                    ),
+                    headers={"Content-Type": "application/x-www-form-urlencoded"},
+                )
+
+                if response.status_code != 200:
+                    logger.error("Spotify token refresh failed: %s", response.text)
+                    return None
+
+                token_data = response.json()
+                account["accessToken"] = token_data["access_token"]
+                account["tokenExpiresAt"] = now + token_data.get("expires_in", 3600)
+                if "refresh_token" in token_data:
+                    account["refreshToken"] = token_data["refresh_token"]
+                self._save_accounts(accounts)
+                logger.info("Spotify token refreshed for speaker injection")
+            except Exception:
+                logger.exception("Failed to refresh Spotify token")
+                return None
+
+        return account["accessToken"]
+
+    def get_spotify_user_id(self) -> str | None:
+        """Get the Spotify user ID of the first linked account."""
+        accounts = self._load_accounts()
+        if not accounts:
+            return None
+        return accounts[0].get("spotifyUserId")
 
     async def _get_user_profile(self, access_token: str) -> dict:
         """Fetch the current user's Spotify profile."""
@@ -225,5 +256,139 @@ class SpotifyService:
         return response.json()
 
     def list_accounts(self) -> list[dict]:
-        """List all stored Spotify accounts."""
+        """List all stored Spotify accounts (with tokens stripped)."""
         return self._load_accounts()
+
+    async def resolve_entity(self, uri: str) -> dict:
+        """Resolve a Spotify URI to a name and image URL.
+
+        Supports: spotify:track:ID, spotify:album:ID,
+        spotify:playlist:ID, spotify:artist:ID
+        """
+        parts = uri.split(":")
+        if len(parts) != 3:
+            raise ValueError(f"Invalid Spotify URI format: {uri}")
+
+        entity_type = parts[1]  # track, album, playlist, artist
+        entity_id = parts[2]
+
+        valid_types = {"track", "album", "playlist", "artist"}
+        if entity_type not in valid_types:
+            raise ValueError(f"Unsupported Spotify entity type: {entity_type}")
+
+        # Pluralize for the API path (track -> tracks, etc.)
+        api_type = entity_type + "s"
+
+        access_token = await self._get_valid_token()
+
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                f"{SPOTIFY_API_BASE}/{api_type}/{entity_id}",
+                headers={"Authorization": f"Bearer {access_token}"},
+            )
+
+        if response.status_code == 404:
+            raise ValueError("Spotify entity not found")
+
+        if response.status_code != 200:
+            raise RuntimeError(f"Spotify API error: {response.text}")
+
+        data = response.json()
+        name = data.get("name", "Unknown")
+
+        # Extract image URL — location varies by entity type
+        image_url = None
+        images = data.get("images", [])
+        if not images and entity_type == "track":
+            # Tracks store images on the album
+            album_images = data.get("album", {}).get("images", [])
+            if album_images:
+                image_url = album_images[0].get("url")
+        elif images:
+            image_url = images[0].get("url")
+
+        return {"name": name, "imageUrl": image_url}
+
+    async def activate_speaker(
+        self,
+        device_name_hint: str = "Bose",
+        max_retries: int = 5,
+        retry_delay: float = 5.0,
+    ) -> dict:
+        """Transfer the Spotify playback session to a speaker.
+
+        After ZeroConf priming the speaker is registered with Spotify's
+        servers but idle.  Transferring playback via the Web API triggers
+        Spotify to push an activation command to the speaker over its AP
+        connection, which is exactly what the Spotify desktop/web app does
+        when you select the speaker as playback device.
+
+        Without this step the speaker's embedded Spotify SDK cannot
+        initiate playback for SoundTouch presets (stuck in BUFFERING_STATE).
+
+        Args:
+            device_name_hint: Substring to match in the Spotify Connect
+                device name (case-insensitive).
+            max_retries: How many times to poll for the device to appear
+                in the Spotify device list after ZeroConf priming.
+            retry_delay: Seconds between retries.
+
+        Returns:
+            Dict with ``id``, ``name``, and ``activated`` flag.
+        """
+        access_token = await self._get_valid_token()
+
+        speaker = None
+        devices: list[dict] = []
+        for attempt in range(1, max_retries + 1):
+            async with httpx.AsyncClient() as client:
+                response = await client.get(
+                    f"{SPOTIFY_API_BASE}/me/player/devices",
+                    headers={"Authorization": f"Bearer {access_token}"},
+                )
+
+            if response.status_code != 200:
+                raise RuntimeError(f"Failed to list Spotify devices: {response.text}")
+
+            devices = response.json().get("devices", [])
+            speaker = next(
+                (d for d in devices if device_name_hint.lower() in d.get("name", "").lower()),
+                None,
+            )
+            if speaker:
+                break
+
+            if attempt < max_retries:
+                logger.info(
+                    "Speaker not found yet (attempt %d/%d, hint='%s'), retrying in %ds...",
+                    attempt,
+                    max_retries,
+                    device_name_hint,
+                    int(retry_delay),
+                )
+                await asyncio.sleep(retry_delay)
+
+        if not speaker:
+            available = [d.get("name") for d in devices]
+            raise RuntimeError(f"Speaker not found (hint='{device_name_hint}'). Available: {available}")
+
+        # Transfer playback to the speaker without starting audio.
+        async with httpx.AsyncClient() as client:
+            response = await client.put(
+                f"{SPOTIFY_API_BASE}/me/player",
+                headers={
+                    "Authorization": f"Bearer {access_token}",
+                    "Content-Type": "application/json",
+                },
+                json={"device_ids": [speaker["id"]], "play": False},
+            )
+
+        if response.status_code not in (200, 204):
+            raise RuntimeError(f"Failed to transfer playback: {response.text}")
+
+        logger.info(
+            "Playback transferred to speaker '%s' (id=%s)",
+            speaker["name"],
+            speaker["id"],
+        )
+        return {"id": speaker["id"], "name": speaker["name"], "activated": True}
