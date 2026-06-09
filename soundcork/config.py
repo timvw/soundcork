@@ -24,10 +24,34 @@ class Settings(BaseSettings):
     # local directory where soundcork stores its data
     data_dir: str = ""
 
+    soundcork_mode: str = "local"
+    soundcork_log_dir: str = "./logs/traffic"
+
+    # Management API authentication
+    mgmt_username: str = "admin"
+    mgmt_password: str = "change_me!"
+
+    # Debug logging for API research
+    log_request_body: bool = False
+    log_request_headers: bool = False
+
+    # ZeroConf primer: periodic push of Spotify tokens to speakers
+    # Disable if speakers self-prime at boot via /mnt/nv/rc.local
+    zeroconf_primer_enabled: bool = True
+
+    # OIDC authentication (optional — when all three are set, OIDC is enabled)
+    oidc_issuer_url: str = ""
+    oidc_client_id: str = ""
+    oidc_client_secret: str = ""
+
+    @property
+    def oidc_enabled(self) -> bool:
+        return bool(self.oidc_issuer_url and self.oidc_client_id and self.oidc_client_secret)
+
     # Spotify OAuth (optional — leave empty to disable)
     spotify_client_id: str = ""
     spotify_client_secret: str = ""
-    spotify_redirect_uri: str = ""
+    spotify_redirect_uri: str = "ueberboese-login://spotify"
 
     # (optional) local directory for soundcork to store detailed logs of 404 errors
     #  used for development/debugging

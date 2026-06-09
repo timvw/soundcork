@@ -1,59 +1,3 @@
-"""This feature is currently disabled because all the spotify
-functionality is available just through the oauth endpoint.
-Keeping this implementation for reference in case some deficiency
-is found in the oauth endpoint implementation during user testing.
-
-To re-enable add the following to main.py:
-
-from soundcork.zeroconf_primer import ZeroConfPrimer
-
-zeroconf_primer = ZeroConfPrimer(spotify_service, datastore, settings)
-
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-   logger.info("Starting up soundcork -- zeroconf configuration")
-   zeroconf_primer.start_periodic()
-   logger.info("done starting up server")
-   yield
-   zeroconf_primer.stop_periodic()
-   logger.debug("closing server")
-
-
-@app.middleware("http")
-async def register_speakers_middleware(request: Request, call_next):
-#   Capture account/device IDs from marge URLs for the Spotify primer.
-   response = await call_next(request)
-
-   path = request.url.path
-   if "/marge/" in path and "/account/" in path and "/device/" in path:
-       parts = path.split("/")
-       try:
-           acc_idx = parts.index("account") + 1
-           dev_idx = parts.index("device") + 1
-           if acc_idx < len(parts) and dev_idx < len(parts):
-               zeroconf_primer.register_speaker(parts[acc_idx], parts[dev_idx])
-       except (ValueError, IndexError):
-           pass
-
-   return response
-
-(add lifespan method to FastAPI creation, like)
-app = FastAPI(
-    title="SoundCork",
-    description=description,
-    summary="Emulates SoundTouch servers.",
-    version="0.0.1",
-    openapi_tags=tags_metadata,
-    lifespan=lifespan,
-)
-
-(in power_on)
-        # Prime speakers for Spotify after boot.  The primer handles
-        # retry/backoff in a background thread so the response is fast.
-        zeroconf_primer.on_power_on(source_ip)
-
-"""
-
 """Spotify ZeroConf primer for SoundTouch speakers.
 
 After Bose's cloud servers shut down, speakers can no longer obtain
@@ -86,7 +30,7 @@ import threading
 import time
 import urllib.parse
 import urllib.request
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from soundcork.config import Settings
 from soundcork.datastore import DataStore
@@ -267,9 +211,7 @@ class ZeroConfPrimer:
         if self._cached_token and now < self._token_expires_at - 120:
             return self._cached_token, user_id
 
-        token_dict = self._spotify.get_fresh_token_sync()
-        token = token_dict.get("access_token", "")
-
+        token = self._spotify.get_fresh_token_sync()
         if not token:
             logger.warning("Could not get Spotify access token")
             return None
@@ -398,11 +340,7 @@ class ZeroConfPrimer:
             # They get re-added automatically when they contact marge
             # or send a power_on event.
             with self._lock:
-                to_remove = [
-                    did
-                    for did, s in self._speakers.items()
-                    if s.prime_failures >= MAX_CONSECUTIVE_FAILURES
-                ]
+                to_remove = [did for did, s in self._speakers.items() if s.prime_failures >= MAX_CONSECUTIVE_FAILURES]
                 for did in to_remove:
                     s = self._speakers.pop(did)
                     logger.warning(
@@ -419,10 +357,6 @@ class ZeroConfPrimer:
 
     @staticmethod
     def _send_add_user(speaker_ip: str, user_id: str, token: str) -> dict:
-        logger.info(
-            f"DEBUG:  trying to add user {user_id} to {speaker_ip} but not really"
-        )
-
         """Send addUser to the speaker's ZeroConf endpoint."""
         post_data = urllib.parse.urlencode(
             {
