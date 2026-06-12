@@ -1,0 +1,92 @@
+#!/bin/bash
+#
+# spotify-watchdog — Monitor Spotify SDK health on Bose SoundTouch speakers
+#
+# Runs as a background daemon (started from /mnt/nv/rc.local). Periodically
+# checks whether the Spotify ZeroConf endpoint (port 8200) is responsive.
+# If it becomes unresponsive (STSCertified stuck in a retry loop), reboots
+# the speaker so the boot primer can re-establish a clean Spotify session.
+#
+# The Bose Spotify SDK (STSCertified) has no retry backoff — when a Spotify
+# CDN fetch fails, it retries in a tight loop that starves all other work
+# on port 8200, making ZeroConf (and therefore Spotify presets) unusable.
+# A reboot is the only recovery since we cannot restart STSCertified alone.
+#
+# The watchdog is playback-aware: it will NOT reboot while the speaker is
+# actively streaming non-Spotify audio (e.g. TuneIn/web radio). A stuck
+# ZeroConf endpoint doesn't matter if nobody is using Spotify.
+#
+# Install:
+#   1. Copy this script to /mnt/nv/bin/spotify-watchdog
+#   2. chmod +x /mnt/nv/bin/spotify-watchdog
+#   3. Add to /mnt/nv/rc.local:  /mnt/nv/bin/spotify-watchdog &
+#
+# Uses the same config file as the boot primer:
+#   /mnt/nv/BoseApp-Persistence/1/spotify-primer.conf
+#
+# Related:
+#   https://github.com/timvw/soundcork
+#
+set -uo pipefail
+
+LOG_TAG="spotify-watchdog[$$]"
+ZC_URL="http://localhost:8200/zc"
+NOW_PLAYING_URL="http://localhost:8090/now_playing"
+
+CHECK_INTERVAL=300   # seconds between health checks (5 minutes)
+FAIL_THRESHOLD=3     # consecutive failures before reboot
+STARTUP_DELAY=180    # seconds to wait after boot before first check
+
+fail_count=0
+
+log() {
+    logger -s -t "$LOG_TAG" -p "$1" "$2"
+}
+
+is_playing_non_spotify() {
+    local np
+    np=$(curl -sf --max-time 5 "$NOW_PLAYING_URL" 2>/dev/null) || return 1
+
+    local source
+    source=$(echo "$np" | grep -o 'source="[^"]*"' | head -1 | sed 's/source="//;s/"//')
+
+    local play_status
+    play_status=$(echo "$np" | grep -o '<playStatus>[^<]*</playStatus>' | sed 's/<[^>]*>//g')
+
+    if [ "$play_status" = "PLAY_STATE" ] && [ -n "$source" ] && [ "$source" != "SPOTIFY" ]; then
+        return 0
+    fi
+    return 1
+}
+
+# Wait for initial boot + primer to complete before monitoring
+log info "Watchdog starting (startup delay ${STARTUP_DELAY}s, check every ${CHECK_INTERVAL}s, reboot after ${FAIL_THRESHOLD} failures)"
+sleep $STARTUP_DELAY
+
+while true; do
+    response=$(curl -sf --max-time 10 "${ZC_URL}?action=getInfo" 2>/dev/null)
+
+    if [ -n "$response" ]; then
+        if [ $fail_count -gt 0 ]; then
+            log info "ZeroConf recovered after ${fail_count} failure(s)"
+        fi
+        fail_count=0
+    else
+        fail_count=$((fail_count + 1))
+        log warning "ZeroConf unresponsive (failure ${fail_count}/${FAIL_THRESHOLD})"
+
+        if [ $fail_count -ge $FAIL_THRESHOLD ]; then
+            if is_playing_non_spotify; then
+                log warning "ZeroConf stuck but speaker is playing non-Spotify audio — skipping reboot"
+                fail_count=0
+            else
+                log err "ZeroConf unresponsive for ${FAIL_THRESHOLD} consecutive checks — rebooting"
+                sleep 2
+                reboot
+                exit 0
+            fi
+        fi
+    fi
+
+    sleep $CHECK_INTERVAL
+done
