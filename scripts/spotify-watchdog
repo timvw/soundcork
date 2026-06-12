@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/sh
 #
 # spotify-watchdog — Monitor Spotify SDK health on Bose SoundTouch speakers
 #
@@ -27,15 +27,15 @@
 # Related:
 #   https://github.com/timvw/soundcork
 #
-set -uo pipefail
+set -u
 
 LOG_TAG="spotify-watchdog[$$]"
 ZC_URL="http://localhost:8200/zc"
 NOW_PLAYING_URL="http://localhost:8090/now_playing"
 
-CHECK_INTERVAL=300   # seconds between health checks (5 minutes)
-FAIL_THRESHOLD=3     # consecutive failures before reboot
-STARTUP_DELAY=180    # seconds to wait after boot before first check
+CHECK_INTERVAL="${CHECK_INTERVAL:-300}"   # seconds between health checks (5 minutes)
+FAIL_THRESHOLD="${FAIL_THRESHOLD:-3}"     # consecutive failures before reboot
+STARTUP_DELAY="${STARTUP_DELAY:-180}"     # seconds to wait after boot before first check
 
 fail_count=0
 
