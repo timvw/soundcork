@@ -14,7 +14,9 @@
 #
 # The watchdog is playback-aware: it will NOT reboot while the speaker is
 # actively streaming non-Spotify audio (e.g. TuneIn/web radio). A stuck
-# ZeroConf endpoint doesn't matter if nobody is using Spotify.
+# ZeroConf endpoint doesn't matter if nobody is using Spotify. If
+# /now_playing becomes unreachable, the watchdog can only defer the reboot
+# up to MAX_DEFERRALS times before rebooting anyway.
 #
 # Install:
 #   1. Copy this script to /mnt/nv/bin/spotify-watchdog
@@ -32,11 +34,12 @@ set -u
 LOG_TAG="spotify-watchdog[$$]"
 ZC_URL="http://localhost:8200/zc"
 NOW_PLAYING_URL="http://localhost:8090/now_playing"
+PIDFILE="/var/run/spotify-watchdog.pid"
 
 CHECK_INTERVAL="${CHECK_INTERVAL:-300}"   # seconds between health checks (5 minutes)
 FAIL_THRESHOLD="${FAIL_THRESHOLD:-3}"     # consecutive failures before reboot
 STARTUP_DELAY="${STARTUP_DELAY:-180}"     # seconds to wait after boot before first check
-MAX_DEFERRALS="${MAX_DEFERRALS:-3}"       # max reboot deferrals before forcing reboot
+MAX_DEFERRALS="${MAX_DEFERRALS:-3}"       # max reboot deferrals when playback status is unknown
 DRY_RUN="${DRY_RUN:-0}"                   # set to 1 to log reboot decisions without rebooting
 
 # --- Validate parameters ---
@@ -56,12 +59,20 @@ esac
 [ "$FAIL_THRESHOLD" -ge 1 ] || { echo "FAIL_THRESHOLD must be >= 1" >&2; exit 1; }
 [ "$MAX_DEFERRALS" -ge 1 ] || { echo "MAX_DEFERRALS must be >= 1" >&2; exit 1; }
 
-fail_count=0
-defer_count=0  # consecutive reboot deferrals (resets on fresh non-Spotify confirmation)
-
 log() {
     logger -s -t "$LOG_TAG" -p "$1" "$2"
 }
+
+# --- Singleton guard ---
+if [ -s "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
+    log warning "Watchdog already running (pid $(cat "$PIDFILE"))"
+    exit 0
+fi
+echo "$$" > "$PIDFILE"
+trap 'rm -f "$PIDFILE"' EXIT INT TERM
+
+fail_count=0
+defer_count=0  # reboot deferrals when /now_playing is unreachable
 
 # Query /now_playing and return the result.
 # Returns 0 and sets NP_SOURCE / NP_STATUS if the API responded.
@@ -77,18 +88,21 @@ query_now_playing() {
     return 0
 }
 
-# Check whether the speaker is actively playing non-Spotify audio.
-# Returns: 0 = confirmed playing non-Spotify (fresh data)
-#          1 = not playing non-Spotify, or API unreachable
-is_playing_non_spotify() {
+# Check playback status and decide whether to defer reboot.
+# Returns: "playing"    = confirmed non-Spotify playback (always defer)
+#          "unknown"    = /now_playing unreachable (defer up to MAX_DEFERRALS)
+#          "not_playing"= idle or Spotify (do not defer)
+check_playback() {
     if ! query_now_playing; then
-        return 1  # API unreachable — cannot confirm, return false
+        echo "unknown"
+        return
     fi
 
     if [ "$NP_STATUS" = "PLAY_STATE" ] && [ -n "$NP_SOURCE" ] && [ "$NP_SOURCE" != "SPOTIFY" ]; then
-        return 0
+        echo "playing"
+    else
+        echo "not_playing"
     fi
-    return 1
 }
 
 do_reboot() {
@@ -109,9 +123,8 @@ log info "Watchdog starting (startup delay ${STARTUP_DELAY}s, check every ${CHEC
 sleep "$STARTUP_DELAY"
 
 while true; do
-    response=$(curl -sf --max-time 10 "${ZC_URL}?action=getInfo" 2>/dev/null)
-
-    if [ -n "$response" ]; then
+    # Check both curl exit status and non-empty response
+    if response=$(curl -sf --max-time 10 "${ZC_URL}?action=getInfo" 2>/dev/null) && [ -n "$response" ]; then
         if [ "$fail_count" -gt 0 ]; then
             log info "ZeroConf recovered after ${fail_count} failure(s)"
         fi
@@ -122,16 +135,30 @@ while true; do
         log warning "ZeroConf unresponsive (failure ${fail_count}/${FAIL_THRESHOLD})"
 
         if [ "$fail_count" -ge "$FAIL_THRESHOLD" ]; then
-            if [ "$defer_count" -ge "$MAX_DEFERRALS" ]; then
-                log warning "Max deferrals (${MAX_DEFERRALS}) reached — rebooting regardless of playback"
-                do_reboot
-            elif is_playing_non_spotify; then
-                defer_count=$((defer_count + 1))
-                log warning "ZeroConf stuck but speaker is playing non-Spotify audio — deferring reboot (${defer_count}/${MAX_DEFERRALS})"
-                fail_count=0
-            else
-                do_reboot
-            fi
+            playback=$(check_playback)
+
+            case "$playback" in
+                playing)
+                    # Confirmed non-Spotify playback — always defer, no limit
+                    log warning "ZeroConf stuck but speaker is playing non-Spotify audio — deferring reboot"
+                    fail_count=0
+                    ;;
+                unknown)
+                    # /now_playing unreachable — defer with limit
+                    defer_count=$((defer_count + 1))
+                    if [ "$defer_count" -ge "$MAX_DEFERRALS" ]; then
+                        log warning "Playback status unknown for ${MAX_DEFERRALS} consecutive deferrals — rebooting"
+                        do_reboot
+                    else
+                        log warning "Playback status unknown — deferring reboot (${defer_count}/${MAX_DEFERRALS})"
+                        fail_count=0
+                    fi
+                    ;;
+                *)
+                    # Idle or Spotify — reboot immediately
+                    do_reboot
+                    ;;
+            esac
         fi
     fi
 

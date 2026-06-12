@@ -499,7 +499,7 @@ All parameters can be overridden via environment variables:
 | `STARTUP_DELAY` | 180s | Wait after boot before first check |
 | `CHECK_INTERVAL` | 300s | Seconds between health checks |
 | `FAIL_THRESHOLD` | 3 | Consecutive failures before reboot |
-| `MAX_DEFERRALS` | 3 | Max times reboot is deferred for non-Spotify playback |
+| `MAX_DEFERRALS` | 3 | Max deferrals when playback status is unknown |
 | `DRY_RUN` | 0 | Set to 1 to log reboot decisions without rebooting |
 
 ### Example log output
