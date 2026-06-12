@@ -478,8 +478,11 @@ EOF
 ### 3. Test it
 
 ```sh
-# Verify it starts
-ssh root@<speaker-ip> /mnt/nv/bin/spotify-watchdog &
+# Quick foreground test (skips startup delay, checks every 10s, reboots after 1 failure):
+ssh root@<speaker-ip> 'STARTUP_DELAY=0 CHECK_INTERVAL=10 FAIL_THRESHOLD=1 /mnt/nv/bin/spotify-watchdog'
+# Press Ctrl-C to stop once you see health check output
+
+# Check logs:
 ssh root@<speaker-ip> 'logread | grep spotify-watchdog'
 ```
 
@@ -488,6 +491,8 @@ ssh root@<speaker-ip> 'logread | grep spotify-watchdog'
 The watchdog waits 3 minutes after boot (giving the primer time to complete),
 then checks ZeroConf every 5 minutes. If ZeroConf is unresponsive for 3
 consecutive checks (15 minutes), it reboots the speaker.
+
+All parameters can be overridden via environment variables:
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
