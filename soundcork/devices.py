@@ -14,7 +14,6 @@ import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from io import BytesIO
 from os import unlink
-from subprocess import run
 from typing import Optional
 from urllib.parse import urlparse
 
@@ -93,29 +92,21 @@ def override_speaker_config(host: str) -> bool:
 async def override_speaker_config_non_rooted(host: str) -> bool:
     logger.info("override speaker without root")
     reader, writer = await open_connection(host, 17000, encoding="utf-8")
-    if isinstance(reader, TelnetReaderUnicode) and isinstance(
-        writer, TelnetWriterUnicode
-    ):
+    if isinstance(reader, TelnetReaderUnicode) and isinstance(writer, TelnetWriterUnicode):
         # the telnet reader can read up to a certain number of characters
         # or until EOF, but in order to say "fill this buffer or return after
         # a timeout" you have to wrap it with asyncio.wait_for
-        data = await asyncio.wait_for(reader.read(4096), timeout=2)
-        writer.write(
-            f"sys configuration bmxRegistryUrl {settings.base_url}/bmx/registry/v1/services\r\n"
-        )
-        data = await asyncio.wait_for(reader.read(4096), timeout=2)
+        await asyncio.wait_for(reader.read(4096), timeout=2)
+        writer.write(f"sys configuration bmxRegistryUrl {settings.base_url}/bmx/registry/v1/services\r\n")
+        await asyncio.wait_for(reader.read(4096), timeout=2)
         writer.write(f"sys configuration statsServerUrl {settings.base_url}\r\n")
-        data = await asyncio.wait_for(reader.read(4096), timeout=2)
+        await asyncio.wait_for(reader.read(4096), timeout=2)
         writer.write(f"sys configuration margeServerUrl {settings.base_url}/marge\r\n")
-        data = await asyncio.wait_for(reader.read(4096), timeout=2)
-        writer.write(
-            f"sys configuration swUpdateUrl {settings.base_url}/updates/soundtouch\r\n"
-        )
-        data = await asyncio.wait_for(reader.read(4096), timeout=2)
-        writer.write(
-            f"envswitch boseurls set {settings.base_url}/marge {settings.base_url}/updates/soundtouch\r\n"
-        )
-        data = await asyncio.wait_for(reader.read(4096), timeout=2)
+        await asyncio.wait_for(reader.read(4096), timeout=2)
+        writer.write(f"sys configuration swUpdateUrl {settings.base_url}/updates/soundtouch\r\n")
+        await asyncio.wait_for(reader.read(4096), timeout=2)
+        writer.write(f"envswitch boseurls set {settings.base_url}/marge {settings.base_url}/updates/soundtouch\r\n")
+        await asyncio.wait_for(reader.read(4096), timeout=2)
         # this isn't actually necessary but good to have in the logs
         writer.write("getpdo CurrentSystemConfiguration\r\n")
         reply = await asyncio.wait_for(reader.read(4096), timeout=2)
@@ -128,7 +119,6 @@ async def override_speaker_config_non_rooted(host: str) -> bool:
 
 
 def write_file_to_speaker(payload: BytesIO, host: str, remote_path: str) -> bool:
-
     # TODO add timeout handling
     logger.debug(f"copying {remote_path} to {host}")
 
@@ -154,7 +144,7 @@ def reboot_speaker(host: str) -> bool:
         ssh.close()
         logger.debug(f"sent reboot to {host}")
         return True
-    except:
+    except Exception:
         logger.info(f"error rebooting {host}")
         return False
 
@@ -188,9 +178,7 @@ def get_bose_devices() -> list[upnpclient.upnp.Device]:
     devices = upnpclient.discover()
     bose_devices = [d for d in devices if "Bose SoundTouch" in d.model_description]
     logger.info("Discovering upnp devices on the network")
-    logger.info(
-        f'Discovered Bose devices:\n- {"\n- ".join([b.friendly_name for b in bose_devices])}'
-    )
+    logger.info(f"Discovered Bose devices:\n- {'\n- '.join([b.friendly_name for b in bose_devices])}")
     return bose_devices
 
 
@@ -203,7 +191,7 @@ def get_device_by_id(device_id: str) -> Optional[upnpclient.upnp.Device]:
                 info_elem = ET.fromstring(info_str)
                 if info_elem.attrib.get("deviceID", "") == device_id:
                     return device
-        except:
+        except Exception:
             pass
     return None
 
@@ -235,7 +223,7 @@ def addr_is_reachable(device_address: str) -> bool:
     try:
         s.connect((device_address, 22))  # Port ,Here 22 is port
         return True
-    except:
+    except Exception:
         return False
 
 
@@ -266,9 +254,7 @@ def add_device_by_ip(hostname: str, reachable: bool = True) -> bool:
         datastore.add_device(
             account_id,
             device_id,
-            datastore.device_info_from_device_info_xml(
-                ET.fromstring(read_device_info(hostname))
-            ),
+            datastore.device_info_from_device_info_xml(ET.fromstring(read_device_info(hostname))),
         )  # type: ignore
         return True
     return False
@@ -293,9 +279,7 @@ def add_account(
 def default_sources() -> list[ConfiguredSource]:
     # this is a basic set of sources that all can be
     # used without a configured account
-    now = datetime.fromtimestamp(datetime.now().timestamp(), timezone.utc).isoformat(
-        timespec="milliseconds"
-    )
+    now = datetime.fromtimestamp(datetime.now().timestamp(), timezone.utc).isoformat(timespec="milliseconds")
     return [
         ConfiguredSource(
             display_name="AUX IN",

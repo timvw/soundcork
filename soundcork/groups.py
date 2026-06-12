@@ -56,7 +56,6 @@ def get_groups_router(datastore):
         account: Annotated[str, Path(pattern=ACCOUNT_RE)],
         request: Request,
     ) -> str:
-
         reqxml_bytes = await request.body()
         reqxml_str = reqxml_bytes.decode("utf-8")
 

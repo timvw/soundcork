@@ -17,7 +17,7 @@ SPOTIFY_CLIENT_SECRET are configured.
 import logging
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 from soundcork.config import Settings
@@ -92,8 +92,7 @@ async def spotify_callback(
     """
     if error:
         return HTMLResponse(
-            content=f"<html><body><h1>Spotify Authorization Failed</h1>"
-            f"<p>Error: {error}</p></body></html>",
+            content=f"<html><body><h1>Spotify Authorization Failed</h1><p>Error: {error}</p></body></html>",
             status_code=400,
         )
 

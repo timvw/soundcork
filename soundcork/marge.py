@@ -101,9 +101,7 @@ def update_preset(
     # 'name' and 'username' are the human-readable name of the preset, interchangeably.
     # - Stockholm (the mobile app), when setting a preset, calls this field 'username'
     # - The speakers themselves, when setting a preset, calls this field 'name'
-    name = strip_element_text(new_preset_elem.find("name")) or strip_element_text(
-        new_preset_elem.find("username")
-    )
+    name = strip_element_text(new_preset_elem.find("name")) or strip_element_text(new_preset_elem.find("username"))
     source_id = strip_element_text(new_preset_elem.find("sourceid"))
     location = strip_element_text(new_preset_elem.find("location"))
     content_item_type = strip_element_text(new_preset_elem.find("contentItemType"))
@@ -473,7 +471,6 @@ def software_update_xml() -> ET.Element:
 
 
 def add_device_to_account(datastore: "DataStore", account: str, source_xml: str) -> tuple[str, ET.Element]:
-
     new_device_elem = ET.fromstring(source_xml)
     device_id = new_device_elem.attrib.get("deviceid", "")
     # Name is required and should raise an exception if missing
@@ -509,7 +506,6 @@ def add_device_to_account(datastore: "DataStore", account: str, source_xml: str)
 
 
 def rename_device(datastore: "DataStore", account: str, device_id: str, source_xml: str) -> ET.Element:
-
     new_device_elem = ET.fromstring(source_xml)
     # Name is required and should raise an exception if missing
     name = strip_element_text(new_device_elem.find("name"))
