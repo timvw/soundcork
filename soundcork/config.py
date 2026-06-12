@@ -35,6 +35,18 @@ class Settings(BaseSettings):
     log_request_body: bool = False
     log_request_headers: bool = False
 
+    # Comma-separated list of proxy/tunnel IPs to trust as speaker sources
+    # (e.g. Cloudflare tunnel IPs that forward speaker traffic)
+    trusted_proxy_ips: str = ""
+
+    # RadioBrowser API base URL (without trailing slash).
+    # Override to use a different mirror if de1 is down.
+    radiobrowser_api_url: str = "https://de1.api.radio-browser.info"
+
+    # Downgrade HTTPS stream URLs to HTTP for older speakers that can't
+    # verify modern TLS certificates.  Set to False to keep original URLs.
+    radiobrowser_ssl_downgrade: bool = False
+
     # ZeroConf primer: periodic push of Spotify tokens to speakers
     # Disable if speakers self-prime at boot via /mnt/nv/rc.local
     zeroconf_primer_enabled: bool = True

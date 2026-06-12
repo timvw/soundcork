@@ -91,12 +91,15 @@ def _make_allowlist() -> SpeakerAllowlist:
 def client():
     import soundcork.main as main_mod
 
-    original = main_mod._speaker_allowlist
+    original_allowlist = main_mod._speaker_allowlist
+    original_trusted_proxy_ips = main_mod.settings.trusted_proxy_ips
     main_mod._speaker_allowlist = _make_allowlist()
+    main_mod.settings.trusted_proxy_ips = "testclient"
     try:
         yield TestClient(main_mod.app)
     finally:
-        main_mod._speaker_allowlist = original
+        main_mod._speaker_allowlist = original_allowlist
+        main_mod.settings.trusted_proxy_ips = original_trusted_proxy_ips
 
 
 def _login(client) -> str:
