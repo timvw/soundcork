@@ -68,8 +68,14 @@ if [ -s "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
     log warning "Watchdog already running (pid $(cat "$PIDFILE"))"
     exit 0
 fi
-echo "$$" > "$PIDFILE"
-trap 'rm -f "$PIDFILE"' EXIT INT TERM
+if ! echo "$$" > "$PIDFILE"; then
+    log err "Cannot write pidfile: $PIDFILE"
+    exit 1
+fi
+cleanup() { rm -f "$PIDFILE"; }
+stop() { cleanup; exit 0; }
+trap cleanup EXIT
+trap stop INT TERM
 
 fail_count=0
 defer_count=0  # reboot deferrals when /now_playing is unreachable
@@ -142,6 +148,7 @@ while true; do
                     # Confirmed non-Spotify playback — always defer, no limit
                     log warning "ZeroConf stuck but speaker is playing non-Spotify audio — deferring reboot"
                     fail_count=0
+                    defer_count=0
                     ;;
                 unknown)
                     # /now_playing unreachable — defer with limit

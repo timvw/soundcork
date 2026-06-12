@@ -505,11 +505,11 @@ All parameters can be overridden via environment variables:
 ### Example log output
 
 ```
-spotify-watchdog[1820]: Watchdog starting (startup delay 180s, check every 300s, reboot after 3 failures)
+spotify-watchdog[1820]: Watchdog starting (startup delay 180s, check every 300s, reboot after 3 failures, max deferrals 3, dry_run=0)
 spotify-watchdog[1820]: ZeroConf unresponsive (failure 1/3)
 spotify-watchdog[1820]: ZeroConf unresponsive (failure 2/3)
 spotify-watchdog[1820]: ZeroConf unresponsive (failure 3/3)
-spotify-watchdog[1820]: ZeroConf stuck but speaker is playing non-Spotify audio — skipping reboot
+spotify-watchdog[1820]: ZeroConf stuck but speaker is playing non-Spotify audio — deferring reboot
 ```
 
 ## Warnings
