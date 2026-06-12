@@ -1240,8 +1240,10 @@ def bmx_playback(station_id: str, request: Request) -> BmxPlaybackResponse:
             name=info.get("title", "SoundCloud"),
             streamType="liveRadio",
         )
-    # Detect RadioBrowser UUIDs (they contain hyphens, TuneIn IDs don't)
-    if "-" in station_id and len(station_id) > 20:
+    # Detect RadioBrowser UUIDs via regex (TuneIn IDs are alphanumeric like "s12345")
+    from soundcork.bmx import _is_valid_station_id
+
+    if _is_valid_station_id(station_id):
         transcode = request.query_params.get("transcode", "0") == "1"
         return radiobrowser_playback(
             station_id,

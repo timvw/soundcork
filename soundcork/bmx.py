@@ -761,7 +761,7 @@ def radiobrowser_playback(
     transcode: bool = False,
     bmx_server: str = "",
     api_url: str = RADIOBROWSER_DEFAULT_API,
-    ssl_downgrade: bool = True,
+    ssl_downgrade: bool = False,
 ) -> BmxPlaybackResponse:
     """Emulate RadioBrowser playback by resolving to a TuneIn-identical structure."""
     if not _is_valid_station_id(station_id):
