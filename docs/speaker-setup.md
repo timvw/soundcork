@@ -478,8 +478,8 @@ EOF
 ### 3. Test it
 
 ```sh
-# Quick foreground test (skips startup delay, checks every 10s, reboots after 1 failure):
-ssh root@<speaker-ip> 'STARTUP_DELAY=0 CHECK_INTERVAL=10 FAIL_THRESHOLD=1 /mnt/nv/bin/spotify-watchdog'
+# Quick foreground test (dry-run mode — logs reboot decisions without rebooting):
+ssh root@<speaker-ip> 'STARTUP_DELAY=0 CHECK_INTERVAL=10 DRY_RUN=1 /mnt/nv/bin/spotify-watchdog'
 # Press Ctrl-C to stop once you see health check output
 
 # Check logs:
@@ -499,6 +499,7 @@ All parameters can be overridden via environment variables:
 | `STARTUP_DELAY` | 180s | Wait after boot before first check |
 | `CHECK_INTERVAL` | 300s | Seconds between health checks |
 | `FAIL_THRESHOLD` | 3 | Consecutive failures before reboot |
+| `DRY_RUN` | 0 | Set to 1 to log reboot decisions without rebooting |
 
 ### Example log output
 

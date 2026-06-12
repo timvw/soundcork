@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/bash
 #
 # spotify-watchdog — Monitor Spotify SDK health on Bose SoundTouch speakers
 #
@@ -36,16 +36,59 @@ NOW_PLAYING_URL="http://localhost:8090/now_playing"
 CHECK_INTERVAL="${CHECK_INTERVAL:-300}"   # seconds between health checks (5 minutes)
 FAIL_THRESHOLD="${FAIL_THRESHOLD:-3}"     # consecutive failures before reboot
 STARTUP_DELAY="${STARTUP_DELAY:-180}"     # seconds to wait after boot before first check
+DRY_RUN="${DRY_RUN:-0}"                   # set to 1 to log reboot decisions without rebooting
+
+# --- Validate parameters ---
+case "$CHECK_INTERVAL" in
+    ''|*[!0-9]*) echo "CHECK_INTERVAL must be a positive integer" >&2; exit 1 ;;
+esac
+case "$FAIL_THRESHOLD" in
+    ''|*[!0-9]*) echo "FAIL_THRESHOLD must be a positive integer" >&2; exit 1 ;;
+esac
+case "$STARTUP_DELAY" in
+    ''|*[!0-9]*) echo "STARTUP_DELAY must be a non-negative integer" >&2; exit 1 ;;
+esac
+[ "$CHECK_INTERVAL" -ge 1 ] || { echo "CHECK_INTERVAL must be >= 1" >&2; exit 1; }
+[ "$FAIL_THRESHOLD" -ge 1 ] || { echo "FAIL_THRESHOLD must be >= 1" >&2; exit 1; }
 
 fail_count=0
+last_known_non_spotify=false  # cache last-known non-Spotify playback state
 
 log() {
     logger -s -t "$LOG_TAG" -p "$1" "$2"
 }
 
-is_playing_non_spotify() {
+# Update cached playback state from /now_playing.
+# Sets last_known_non_spotify=true if the speaker is actively playing
+# non-Spotify audio, false otherwise.
+update_playback_state() {
     local np
-    np=$(curl -sf --max-time 5 "$NOW_PLAYING_URL" 2>/dev/null) || return 1
+    np=$(curl -sf --max-time 5 "$NOW_PLAYING_URL" 2>/dev/null) || return
+
+    local source
+    source=$(echo "$np" | grep -o 'source="[^"]*"' | head -1 | sed 's/source="//;s/"//')
+
+    local play_status
+    play_status=$(echo "$np" | grep -o '<playStatus>[^<]*</playStatus>' | sed 's/<[^>]*>//g')
+
+    if [ "$play_status" = "PLAY_STATE" ] && [ -n "$source" ] && [ "$source" != "SPOTIFY" ]; then
+        last_known_non_spotify=true
+    else
+        last_known_non_spotify=false
+    fi
+}
+
+is_playing_non_spotify() {
+    # Try a fresh query first; if it fails, fall back to cached state.
+    # This prevents rebooting during non-Spotify playback when the
+    # SoundTouch API is slow due to the same CPU starvation.
+    local np
+    np=$(curl -sf --max-time 5 "$NOW_PLAYING_URL" 2>/dev/null)
+    if [ -z "$np" ]; then
+        # API unreachable — trust the last-known state
+        [ "$last_known_non_spotify" = "true" ]
+        return
+    fi
 
     local source
     source=$(echo "$np" | grep -o 'source="[^"]*"' | head -1 | sed 's/source="//;s/"//')
@@ -60,14 +103,17 @@ is_playing_non_spotify() {
 }
 
 # Wait for initial boot + primer to complete before monitoring
-log info "Watchdog starting (startup delay ${STARTUP_DELAY}s, check every ${CHECK_INTERVAL}s, reboot after ${FAIL_THRESHOLD} failures)"
-sleep $STARTUP_DELAY
+log info "Watchdog starting (startup delay ${STARTUP_DELAY}s, check every ${CHECK_INTERVAL}s, reboot after ${FAIL_THRESHOLD} failures, dry_run=${DRY_RUN})"
+sleep "$STARTUP_DELAY"
 
 while true; do
+    # Sample playback state every cycle so we have a recent cache
+    update_playback_state
+
     response=$(curl -sf --max-time 10 "${ZC_URL}?action=getInfo" 2>/dev/null)
 
     if [ -n "$response" ]; then
-        if [ $fail_count -gt 0 ]; then
+        if [ "$fail_count" -gt 0 ]; then
             log info "ZeroConf recovered after ${fail_count} failure(s)"
         fi
         fail_count=0
@@ -75,18 +121,23 @@ while true; do
         fail_count=$((fail_count + 1))
         log warning "ZeroConf unresponsive (failure ${fail_count}/${FAIL_THRESHOLD})"
 
-        if [ $fail_count -ge $FAIL_THRESHOLD ]; then
+        if [ "$fail_count" -ge "$FAIL_THRESHOLD" ]; then
             if is_playing_non_spotify; then
                 log warning "ZeroConf stuck but speaker is playing non-Spotify audio — skipping reboot"
                 fail_count=0
             else
                 log err "ZeroConf unresponsive for ${FAIL_THRESHOLD} consecutive checks — rebooting"
-                sleep 2
-                reboot
-                exit 0
+                if [ "$DRY_RUN" = "1" ]; then
+                    log warning "DRY_RUN=1 — reboot skipped"
+                    fail_count=0
+                else
+                    sleep 2
+                    reboot
+                    exit 0
+                fi
             fi
         fi
     fi
 
-    sleep $CHECK_INTERVAL
+    sleep "$CHECK_INTERVAL"
 done
