@@ -149,26 +149,11 @@ if [ "$primed" != "true" ]; then
     exit 1
 fi
 
-# --- Activate speaker via Spotify Web API ---
-# ZeroConf priming registers the speaker with Spotify but leaves it idle.
-# The Spotify desktop app activates the streaming session by calling
-# PUT /v1/me/player — we replicate that via soundcork so that SoundTouch
-# presets can initiate Spotify playback without manual intervention.
-log info "Activating speaker streaming session via soundcork..."
-sleep 5  # give the speaker time to register with Spotify's servers
-
-activate_response=$(curl -sf --max-time 60 \
-    -X POST \
-    -u "${SOUNDCORK_USER}:${SOUNDCORK_PASS}" \
-    "${SOUNDCORK_URL}/mgmt/spotify/activate-speaker?device_name=Bose" \
-    2>&1)
-
-if [ $? -ne 0 ] || [ -z "$activate_response" ]; then
-    log warning "Speaker activation failed (presets may not work until Spotify app connects)"
-    # Non-fatal: ZeroConf priming succeeded, Spotify Connect works.
-    # Only SoundTouch preset playback is affected.
-    exit 0
-fi
-
-log info "Speaker activated: ${activate_response}"
+# NOTE: We intentionally do NOT call /mgmt/spotify/activate-speaker here.
+# That endpoint transfers Spotify playback to the speaker (PUT /v1/me/player),
+# which causes Spotify to continuously push audio even when the speaker is
+# playing web radio. Over time this destabilizes STSCertified into a stuck
+# retry loop. ZeroConf addUser alone is sufficient — the speaker registers
+# with Spotify Connect and activates on demand when a preset is pressed.
+log info "Primer complete (ZeroConf only, no activation)"
 exit 0

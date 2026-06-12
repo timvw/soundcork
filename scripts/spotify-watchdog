@@ -1,0 +1,173 @@
+#!/bin/bash
+#
+# spotify-watchdog — Monitor Spotify SDK health on Bose SoundTouch speakers
+#
+# Runs as a background daemon (started from /mnt/nv/rc.local). Periodically
+# checks whether the Spotify ZeroConf endpoint (port 8200) is responsive.
+# If it becomes unresponsive (STSCertified stuck in a retry loop), reboots
+# the speaker so the boot primer can re-establish a clean Spotify session.
+#
+# The Bose Spotify SDK (STSCertified) has no retry backoff — when a Spotify
+# CDN fetch fails, it retries in a tight loop that starves all other work
+# on port 8200, making ZeroConf (and therefore Spotify presets) unusable.
+# A reboot is the only recovery since we cannot restart STSCertified alone.
+#
+# The watchdog is playback-aware: it will NOT reboot while the speaker is
+# actively streaming non-Spotify audio (e.g. TuneIn/web radio). A stuck
+# ZeroConf endpoint doesn't matter if nobody is using Spotify. If
+# /now_playing becomes unreachable, the watchdog can only defer the reboot
+# up to MAX_DEFERRALS times before rebooting anyway.
+#
+# Install:
+#   1. Copy this script to /mnt/nv/bin/spotify-watchdog
+#   2. chmod +x /mnt/nv/bin/spotify-watchdog
+#   3. Add to /mnt/nv/rc.local:  /mnt/nv/bin/spotify-watchdog &
+#
+# Uses the same config file as the boot primer:
+#   /mnt/nv/BoseApp-Persistence/1/spotify-primer.conf
+#
+# Related:
+#   https://github.com/timvw/soundcork
+#
+set -u
+
+LOG_TAG="spotify-watchdog[$$]"
+ZC_URL="http://localhost:8200/zc"
+NOW_PLAYING_URL="http://localhost:8090/now_playing"
+LOCKDIR="/var/run/spotify-watchdog.lock"
+
+CHECK_INTERVAL="${CHECK_INTERVAL:-300}"   # seconds between health checks (5 minutes)
+FAIL_THRESHOLD="${FAIL_THRESHOLD:-3}"     # consecutive failures before reboot
+STARTUP_DELAY="${STARTUP_DELAY:-180}"     # seconds to wait after boot before first check
+MAX_DEFERRALS="${MAX_DEFERRALS:-3}"       # max reboot deferrals when playback status is unknown
+DRY_RUN="${DRY_RUN:-0}"                   # set to 1 to log reboot decisions without rebooting
+
+# --- Validate parameters ---
+case "$CHECK_INTERVAL" in
+    ''|*[!0-9]*) echo "CHECK_INTERVAL must be a positive integer" >&2; exit 1 ;;
+esac
+case "$FAIL_THRESHOLD" in
+    ''|*[!0-9]*) echo "FAIL_THRESHOLD must be a positive integer" >&2; exit 1 ;;
+esac
+case "$STARTUP_DELAY" in
+    ''|*[!0-9]*) echo "STARTUP_DELAY must be a non-negative integer" >&2; exit 1 ;;
+esac
+case "$MAX_DEFERRALS" in
+    ''|*[!0-9]*) echo "MAX_DEFERRALS must be a positive integer" >&2; exit 1 ;;
+esac
+[ "$CHECK_INTERVAL" -ge 1 ] || { echo "CHECK_INTERVAL must be >= 1" >&2; exit 1; }
+[ "$FAIL_THRESHOLD" -ge 1 ] || { echo "FAIL_THRESHOLD must be >= 1" >&2; exit 1; }
+[ "$MAX_DEFERRALS" -ge 1 ] || { echo "MAX_DEFERRALS must be >= 1" >&2; exit 1; }
+
+log() {
+    logger -s -t "$LOG_TAG" -p "$1" "$2"
+}
+
+# --- Singleton guard (atomic mkdir) ---
+if ! mkdir "$LOCKDIR" 2>/dev/null; then
+    log warning "Watchdog already running or stale lock exists: $LOCKDIR"
+    exit 0
+fi
+cleanup() { rmdir "$LOCKDIR" 2>/dev/null; }
+stop() { cleanup; exit 0; }
+trap cleanup EXIT
+trap stop INT TERM
+
+fail_count=0
+defer_count=0  # reboot deferrals when /now_playing is unreachable
+
+# Query /now_playing and return the result.
+# Returns 0 and sets NP_SOURCE / NP_STATUS if the API responded.
+# Returns 1 if the API is unreachable.
+NP_SOURCE=""
+NP_STATUS=""
+query_now_playing() {
+    local np
+    np=$(curl -sf --max-time 5 "$NOW_PLAYING_URL" 2>/dev/null) || return 1
+
+    NP_SOURCE=$(echo "$np" | grep -o 'source="[^"]*"' | head -1 | sed 's/source="//;s/"//')
+    NP_STATUS=$(echo "$np" | grep -o '<playStatus>[^<]*</playStatus>' | sed 's/<[^>]*>//g')
+    return 0
+}
+
+# Check playback status and decide whether to defer reboot.
+# Returns: "playing"    = confirmed non-Spotify playback (always defer)
+#          "unknown"    = /now_playing unreachable (defer up to MAX_DEFERRALS)
+#          "not_playing"= idle or Spotify (do not defer)
+check_playback() {
+    if ! query_now_playing; then
+        echo "unknown"
+        return
+    fi
+
+    if [ "$NP_STATUS" = "PLAY_STATE" ] && [ -n "$NP_SOURCE" ] && [ "$NP_SOURCE" != "SPOTIFY" ]; then
+        echo "playing"
+    else
+        echo "not_playing"
+    fi
+}
+
+do_reboot() {
+    log err "ZeroConf unresponsive for ${FAIL_THRESHOLD} consecutive checks — rebooting"
+    if [ "$DRY_RUN" = "1" ]; then
+        log warning "DRY_RUN=1 — reboot skipped"
+        fail_count=0
+        defer_count=0
+    else
+        sleep 2
+        if reboot; then
+            exit 0
+        fi
+        log err "reboot command failed; watchdog continuing"
+        fail_count=0
+        defer_count=0
+    fi
+}
+
+# Wait for initial boot + primer to complete before monitoring
+log info "Watchdog starting (startup delay ${STARTUP_DELAY}s, check every ${CHECK_INTERVAL}s, reboot after ${FAIL_THRESHOLD} failures, max deferrals ${MAX_DEFERRALS}, dry_run=${DRY_RUN})"
+sleep "$STARTUP_DELAY"
+
+while true; do
+    # Check both curl exit status and non-empty response
+    if response=$(curl -sf --max-time 10 "${ZC_URL}?action=getInfo" 2>/dev/null) && [ -n "$response" ]; then
+        if [ "$fail_count" -gt 0 ]; then
+            log info "ZeroConf recovered after ${fail_count} failure(s)"
+        fi
+        fail_count=0
+        defer_count=0
+    else
+        fail_count=$((fail_count + 1))
+        log warning "ZeroConf unresponsive (failure ${fail_count}/${FAIL_THRESHOLD})"
+
+        if [ "$fail_count" -ge "$FAIL_THRESHOLD" ]; then
+            playback=$(check_playback)
+
+            case "$playback" in
+                playing)
+                    # Confirmed non-Spotify playback — always defer, no limit
+                    log warning "ZeroConf stuck but speaker is playing non-Spotify audio — deferring reboot"
+                    fail_count=0
+                    defer_count=0
+                    ;;
+                unknown)
+                    # /now_playing unreachable — defer with limit
+                    defer_count=$((defer_count + 1))
+                    if [ "$defer_count" -ge "$MAX_DEFERRALS" ]; then
+                        log warning "Playback status unknown for ${MAX_DEFERRALS} consecutive deferrals — rebooting"
+                        do_reboot
+                    else
+                        log warning "Playback status unknown — deferring reboot (${defer_count}/${MAX_DEFERRALS})"
+                        fail_count=0
+                    fi
+                    ;;
+                *)
+                    # Idle or Spotify — reboot immediately
+                    do_reboot
+                    ;;
+            esac
+        fi
+    fi
+
+    sleep "$CHECK_INTERVAL"
+done
