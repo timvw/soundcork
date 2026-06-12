@@ -1975,7 +1975,5 @@ handler = NotFoundHandler(settings.unhandled_log_dir)
 
 
 @app.exception_handler(StarletteHTTPException)
-async def unhandled_requests(
-    request: Request, exc: StarletteHTTPException
-) -> StarletteResponse:
+async def unhandled_requests(request: Request, exc: StarletteHTTPException) -> StarletteResponse:
     return await handler.dump_unhandled_requests(request, exc)

@@ -4,6 +4,8 @@ import xml.etree.ElementTree as ET
 from bosesoundtouchapi.models import NowPlayingStatus, Volume  # type: ignore
 from bosesoundtouchapi.soundtouchclient import (  # type: ignore
     ContentItem as BCContentItem,
+)
+from bosesoundtouchapi.soundtouchclient import (
     SoundTouchClient,
     SoundTouchDevice,
     SoundTouchNodes,
@@ -91,9 +93,7 @@ class Speakers:
             if account_id:
                 for device_id in self._datastore.list_devices(account_id):
                     if device_id:
-                        device_info = self._datastore.get_device_info(
-                            account_id, device_id
-                        )
+                        device_info = self._datastore.get_device_info(account_id, device_id)
                         cd = CombinedDevice(
                             # If the IP changes on a device reboot, it would have made a `/power_on`
                             # call to Soundcork, which will have already updated the datastore.
@@ -108,9 +108,7 @@ class Speakers:
                             st_device=None,
                         )
                         combined_devices[device_id] = cd
-                        logger.debug(
-                            f"cd for {device_id} = {combined_devices[device_id]}"
-                        )
+                        logger.debug(f"cd for {device_id} = {combined_devices[device_id]}")
 
         verified = self.soundtouch_devices()
         for key in verified.keys():
@@ -183,9 +181,7 @@ class Speakers:
             logger.error(f"{content_item_id} is not a defined ContentItem")
             return False
 
-        logger.info(
-            f"Attempting playback of content item {content_item_id} on device {device_id}"
-        )
+        logger.info(f"Attempting playback of content item {content_item_id} on device {device_id}")
         bose_content_item = self._content_item_to_soundtouchclient(content_item)
         client = SoundTouchClient(cd.st_device)
         client.PlayContentItem(bose_content_item)
