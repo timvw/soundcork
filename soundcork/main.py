@@ -1311,11 +1311,22 @@ async def bmx_radiobrowser_transcode(station_id: str):
         "pipe:1",
     ]
 
-    process = await asyncio.create_subprocess_exec(
-        *cmd,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
+    try:
+        process = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+    except FileNotFoundError:
+        raise HTTPException(status_code=503, detail="ffmpeg is not installed on the server")
+    except OSError as exc:
+        logger.error("Failed to start ffmpeg: %s", exc)
+        raise HTTPException(status_code=500, detail="Failed to start transcoding process")
+
+    if process.stdout is None:
+        process.terminate()
+        await process.wait()
+        raise HTTPException(status_code=500, detail="Transcoding process has no stdout pipe")
 
     async def iterfile():
         try:
