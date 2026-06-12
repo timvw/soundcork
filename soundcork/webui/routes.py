@@ -50,13 +50,13 @@ _IMAGE_PROXY_ALLOWED_DOMAINS = frozenset(
 )
 
 # Additional domains discovered at runtime via RadioBrowser favicons.
-# RadioBrowser stations can have logos hosted on any domain, so we maintain
-# a mutable set that gets extended when the proxy fetches station metadata.
-_radiobrowser_image_domains: set[str] = set()
+# Bounded to prevent unbounded memory growth / persistent open proxy.
+_RADIOBROWSER_DOMAIN_CACHE_MAX = 500
+_radiobrowser_image_domains: dict[str, None] = {}
 
 
 def _register_radiobrowser_favicon(url: str) -> None:
-    """Add the hostname of a RadioBrowser favicon to the dynamic allowlist."""
+    """Add the hostname of a RadioBrowser favicon to the dynamic allowlist (bounded)."""
     if not url:
         return
     try:
@@ -65,7 +65,10 @@ def _register_radiobrowser_favicon(url: str) -> None:
         if parsed.scheme not in ("http", "https"):
             return
         if hostname and not _is_private_ip(hostname) and not _hostname_resolves_to_blocked_ip(hostname):
-            _radiobrowser_image_domains.add(hostname)
+            if len(_radiobrowser_image_domains) >= _RADIOBROWSER_DOMAIN_CACHE_MAX:
+                # Evict oldest entry (insertion-ordered dict)
+                _radiobrowser_image_domains.pop(next(iter(_radiobrowser_image_domains)))
+            _radiobrowser_image_domains[hostname] = None
     except Exception:
         pass
 
@@ -542,7 +545,11 @@ async def proxy_radiobrowser(path: str, request: Request):
             url = f"{rb_api}/xml/stations/search"
             rb_params = {"name": query, "limit": 50}
         elif path == "describe.ashx":
+            from soundcork.bmx import _is_valid_station_id
+
             station_id = params.get("id", "")
+            if not _is_valid_station_id(station_id):
+                return Response(content="Invalid station ID", status_code=400)
             url = f"{rb_api}/xml/stations/byuuid/{station_id}"
             rb_params = {}
         else:
