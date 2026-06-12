@@ -42,12 +42,15 @@ def client(allowlist):
     import soundcork.main as main_mod
 
     # Inject our test allowlist into the module global
-    original = main_mod._speaker_allowlist
+    original_allowlist = main_mod._speaker_allowlist
+    original_trusted_proxy_ips = main_mod.settings.trusted_proxy_ips
     main_mod._speaker_allowlist = allowlist
+    main_mod.settings.trusted_proxy_ips = "testclient"
     try:
         yield TestClient(main_mod.app)
     finally:
-        main_mod._speaker_allowlist = original
+        main_mod._speaker_allowlist = original_allowlist
+        main_mod.settings.trusted_proxy_ips = original_trusted_proxy_ips
 
 
 def _login(client) -> str:
@@ -75,8 +78,6 @@ class TestBoseProtocolIPRestriction:
     """Bose protocol endpoints should only accept requests from known speaker IPs."""
 
     def test_marge_endpoint_allowed_from_known_speaker(self, client):
-        # The test client uses 'testclient' as the host by default
-        # We need to test that the middleware checks the IP
         resp = client.get(
             "/marge/streaming/sourceproviders",
             headers={"X-Forwarded-For": "192.168.1.143"},
@@ -105,11 +106,7 @@ class TestBoseProtocolIPRestriction:
         assert resp.status_code == 403
 
     def test_webui_not_blocked_by_ip(self, client):
-        """WebUI endpoints should NOT be restricted by speaker IP.
-
-        Without a session, the auth middleware redirects to login (302).
-        The point is: it's NOT a 403 from the IP restriction middleware.
-        """
+        """WebUI endpoints should NOT be restricted by speaker IP."""
         resp = client.get(
             "/webui/",
             headers={"X-Forwarded-For": "203.0.113.99"},
@@ -123,7 +120,6 @@ class TestBoseProtocolIPRestriction:
             "/mgmt/spotify/accounts",
             headers={"X-Forwarded-For": "203.0.113.99"},
         )
-        # Should get 401 (auth required), not 403 (IP blocked)
         assert resp.status_code == 401
 
     def test_loopback_always_allowed(self, client):
@@ -133,16 +129,11 @@ class TestBoseProtocolIPRestriction:
         )
         assert resp.status_code != 403
 
-    def test_xff_spoofing_uses_last_value(self, client):
-        """Attacker-supplied XFF entries should be ignored.
-
-        The reverse proxy (Traefik) appends the real client IP as the last
-        entry.  An attacker can prepend a private IP, but the middleware
-        must use the rightmost (proxy-appended) value.
-        """
+    def test_xff_all_unknown_public_ips_blocked(self, client):
+        """When every XFF entry is an unknown public IP, the request is blocked."""
         resp = client.get(
             "/marge/streaming/sourceproviders",
-            headers={"X-Forwarded-For": "192.168.1.143, 203.0.113.99"},
+            headers={"X-Forwarded-For": "203.0.113.1, 203.0.113.99"},
         )
         assert resp.status_code == 403
 
@@ -154,16 +145,45 @@ class TestBoseProtocolIPRestriction:
         )
         assert resp.status_code != 403
 
+    def test_xff_spoofing_private_ip_first_is_blocked(self, client):
+        """Spoofed private IP entries must not bypass checks."""
+        resp = client.get(
+            "/marge/streaming/sourceproviders",
+            headers={"X-Forwarded-For": "192.168.1.50, 203.0.113.99"},
+        )
+        assert resp.status_code == 403
+
+    def test_cf_connecting_ip_ignored(self, client):
+        """CF-Connecting-IP should not override XFF-derived client identity."""
+        resp = client.get(
+            "/marge/streaming/sourceproviders",
+            headers={
+                "X-Forwarded-For": "203.0.113.99",
+                "CF-Connecting-IP": "192.168.1.143",
+            },
+        )
+        assert resp.status_code == 403
+
+    def test_forwarded_headers_ignored_for_untrusted_proxy(self, client):
+        """Forwarding headers are ignored when the direct peer is untrusted."""
+        import soundcork.main as main_mod
+
+        original_trusted_proxy_ips = main_mod.settings.trusted_proxy_ips
+        main_mod.settings.trusted_proxy_ips = ""
+        try:
+            resp = client.get(
+                "/marge/streaming/sourceproviders",
+                headers={"X-Forwarded-For": "192.168.1.143"},
+            )
+        finally:
+            main_mod.settings.trusted_proxy_ips = original_trusted_proxy_ips
+        assert resp.status_code == 403
+
 
 class TestWebuiSpeakerProxyRestriction:
-    """The webui speaker proxy should only allow proxying to registered speaker IPs.
-
-    These tests use authed_client (logged-in session) to bypass the auth
-    middleware and test the SSRF restrictions in the endpoint itself.
-    """
+    """The webui speaker proxy should only allow proxying to registered speaker IPs."""
 
     def test_speaker_proxy_allowed_for_registered_ip(self, authed_client):
-        # This will fail to connect to the speaker (no real speaker), but shouldn't be 403
         resp = authed_client.get("/webui/api/speaker/192.168.1.143/info")
         assert resp.status_code != 403
 
@@ -188,7 +208,6 @@ class TestWebuiImageProxyRestriction:
             "/webui/api/image",
             params={"url": "https://cdn-profiles.tunein.com/s2398/images/logoq.jpg"},
         )
-        # May fail to connect, but shouldn't be 403
         assert resp.status_code != 403
 
     def test_image_proxy_allows_spotify_cdn(self, authed_client):
@@ -212,6 +231,13 @@ class TestWebuiImageProxyRestriction:
         )
         assert resp.status_code == 403
 
+    def test_image_proxy_blocks_extension_bypass(self, authed_client):
+        resp = authed_client.get(
+            "/webui/api/image",
+            params={"url": "https://evil.com/logo.png"},
+        )
+        assert resp.status_code == 403
+
     def test_image_proxy_blocks_internal_ip(self, authed_client):
         resp = authed_client.get(
             "/webui/api/image",
@@ -232,7 +258,6 @@ class TestWebuiMgmtProxyRestriction:
 
     def test_mgmt_proxy_allows_spotify_accounts(self, authed_client):
         resp = authed_client.get("/webui/api/mgmt/spotify/accounts")
-        # May get a connection error to the backend, but not 403
         assert resp.status_code != 403
 
     def test_mgmt_proxy_allows_spotify_entity(self, authed_client):
@@ -250,7 +275,6 @@ class TestWebuiMgmtProxyRestriction:
         assert resp.status_code == 403
 
     def test_mgmt_proxy_blocks_arbitrary_path(self, authed_client):
-        # Path traversal: FastAPI normalizes ../.. to 404, or our check returns 403
         resp = authed_client.get("/webui/api/mgmt/../../etc/passwd")
         assert resp.status_code in (403, 404)
 

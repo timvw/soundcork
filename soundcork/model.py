@@ -122,6 +122,7 @@ class Stream(BaseModel):
     )
     bufferingTimeout: Optional[int] = None
     connectingTimeout: Optional[int] = None
+    bitrate: Optional[int] = None
     hasPlaylist: bool
     isRealtime: bool
     streamUrl: str

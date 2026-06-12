@@ -1,9 +1,13 @@
 import base64
+import ipaddress
 import json
 import logging
+import re
+import socket
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
+from typing import Optional
 
 from soundcork.config import Settings
 from soundcork.model import (
@@ -740,6 +744,146 @@ def play_custom_stream(data: str) -> BmxPlaybackResponse:
         audio=audio,
         imageUrl=json_obj["imageUrl"],
         name=json_obj["name"],
+        streamType="liveRadio",
+    )
+    return resp
+
+
+def _is_safe_stream_url(url: str) -> bool:
+    """Reject URLs targeting internal/private networks (SSRF protection)."""
+    try:
+        parsed = urllib.parse.urlparse(url)
+        hostname = parsed.hostname or ""
+        if not hostname:
+            return False
+        if parsed.scheme not in ("http", "https"):
+            return False
+        for info in socket.getaddrinfo(hostname, None, socket.AF_UNSPEC, socket.SOCK_STREAM):
+            addr = ipaddress.ip_address(info[4][0])
+            if addr.is_private or addr.is_loopback or addr.is_link_local or addr.is_reserved:
+                return False
+    except Exception:
+        return False
+    return True
+
+
+_UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.IGNORECASE)
+
+
+def _is_valid_station_id(station_id: str) -> bool:
+    return bool(_UUID_RE.match(station_id))
+
+
+RADIOBROWSER_DEFAULT_API = "https://de1.api.radio-browser.info"
+
+
+def get_radiobrowser_station_url(station_id: str, api_url: str = RADIOBROWSER_DEFAULT_API) -> Optional[str]:
+    """Helper to get a station URL from RadioBrowser by UUID."""
+    if not _is_valid_station_id(station_id):
+        logger.warning("Invalid RadioBrowser station ID: %s", station_id)
+        return None
+    describe_url = f"{api_url}/xml/stations/byuuid/{station_id}"
+    try:
+        with urllib.request.urlopen(describe_url) as response:
+            contents = response.read()
+        rb_root = ET.fromstring(contents)
+        station = rb_root.find("station")
+        if station is not None:
+            url = station.get("url_resolved") or station.get("url")
+            if url and _is_safe_stream_url(url):
+                return url
+            logger.warning("Rejected unsafe stream URL for station %s: %s", station_id, url)
+    except Exception as e:
+        logger.error(f"Error resolving RadioBrowser station {station_id}: {e}")
+    return None
+
+
+def radiobrowser_playback(
+    station_id: str,
+    transcode: bool = False,
+    bmx_server: str = "",
+    api_url: str = RADIOBROWSER_DEFAULT_API,
+    ssl_downgrade: bool = True,
+) -> BmxPlaybackResponse:
+    """Emulate RadioBrowser playback by resolving to a TuneIn-identical structure."""
+    if not _is_valid_station_id(station_id):
+        logger.warning("Invalid RadioBrowser station ID: %s", station_id)
+        return BmxPlaybackResponse(
+            links={},
+            audio=Audio(streamUrl="", streams=[], hasPlaylist=False, isRealtime=False),
+            name="Invalid Station ID",
+        )
+    describe_url = f"{api_url}/xml/stations/byuuid/{station_id}"
+    try:
+        with urllib.request.urlopen(describe_url) as response:
+            contents = response.read()
+        rb_root = ET.fromstring(contents)
+        station = rb_root.find("station")
+    except Exception as e:
+        logger.error(f"Error fetching RadioBrowser station {station_id}: {e}")
+        station = None
+
+    if station is None:
+        return BmxPlaybackResponse(
+            links={},
+            audio=Audio(streamUrl="", streams=[], hasPlaylist=False, isRealtime=False),
+            name="Station Not Found",
+        )
+
+    name = station.get("name", "")
+    logo = station.get("favicon", "")
+
+    if transcode and bmx_server:
+        stream_url = f"{bmx_server}/bmx/radiobrowser/v1/transcode/{station_id}"
+    else:
+        stream_url = station.get("url_resolved") or station.get("url", "")
+        if stream_url and not _is_safe_stream_url(stream_url):
+            logger.warning("Rejected unsafe stream URL for station %s: %s", station_id, stream_url)
+            stream_url = ""
+        if ssl_downgrade and stream_url and stream_url.startswith("https://"):
+            stream_url = "http://" + stream_url[8:]
+
+    bmx_reporting_qs = urllib.parse.urlencode(
+        {
+            "stream_id": "rb-" + station_id[:5],
+            "guide_id": station_id,
+            "listen_id": "3432432423",
+            "stream_type": "liveRadio",
+        }
+    )
+    bmx_reporting = "/v1/report?" + bmx_reporting_qs
+
+    stream = Stream(
+        links={"bmx_reporting": {"href": bmx_reporting}},
+        hasPlaylist=True,
+        isRealtime=True,
+        maxTimeout=60,
+        bufferingTimeout=20,
+        connectingTimeout=10,
+        streamUrl=stream_url,
+    )
+
+    audio = Audio(
+        hasPlaylist=True,
+        isRealtime=True,
+        maxTimeout=60,
+        streamUrl=stream_url,
+        streams=[stream],
+    )
+
+    resp = BmxPlaybackResponse(
+        links={
+            "bmx_favorite": {"href": "/v1/favorite/" + station_id},
+            "bmx_nowplaying": {
+                "href": "/v1/now-playing/station/" + station_id,
+                "useInternalClient": "ALWAYS",
+            },
+            "bmx_reporting": {"href": bmx_reporting},
+        },
+        audio=audio,
+        imageUrl=logo,
+        isFavorite=False,
+        name=name,
         streamType="liveRadio",
     )
     return resp
