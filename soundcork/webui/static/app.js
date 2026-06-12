@@ -179,6 +179,14 @@ const api = {
     const text = await resp.text();
     return new DOMParser().parseFromString(text, 'text/xml');
   },
+
+  async radiobrowserGet(path, params = {}) {
+    const qs = new URLSearchParams(params).toString();
+    const resp = await fetch(`/webui/api/radiobrowser/${path}${qs ? '?' + qs : ''}`);
+    if (!resp.ok) throw new Error(`RadioBrowser error: ${resp.status}`);
+    const text = await resp.text();
+    return new DOMParser().parseFromString(text, 'text/xml');
+  },
 };
 
 // ===================================================================
@@ -292,6 +300,7 @@ const routes = [
   { pattern: /^\/preset\/([^/]+)\/(\d+)$/, render: renderPresetDetail },
   { pattern: /^\/preset\/([^/]+)\/(\d+)\/edit-spotify$/, render: renderEditSpotifyPreset },
   { pattern: /^\/preset\/([^/]+)\/(\d+)\/edit-tunein$/, render: renderEditTuneInPreset },
+  { pattern: /^\/preset\/([^/]+)\/(\d+)\/edit-radiobrowser$/, render: renderEditRadioBrowserPreset },
   { pattern: /^\/preset\/([^/]+)\/(\d+)\/edit-radio$/, render: renderEditInternetRadioPreset },
   { pattern: /^\/preset\/([^/]+)\/(\d+)\/edit-soundcloud$/, render: renderEditSoundCloudPreset },
   { pattern: /^\/recents\/([^/]+)$/, render: renderRecents },
@@ -370,6 +379,7 @@ function sourceBadge(source) {
   const colors = {
     SPOTIFY: 'badge-spotify',
     TUNEIN: 'badge-tunein',
+    RADIO_BROWSER: 'badge-radiobrowser',
     LOCAL_INTERNET_RADIO: 'badge-radio',
     PRODUCT: 'badge-product',
   };
@@ -1121,11 +1131,13 @@ function renderPresetDetail(main, ip, presetId) {
           <div class="btn-group" style="justify-content:center">
             <button class="btn btn-primary" data-edit="spotify">Set Spotify Preset</button>
             <button class="btn" data-edit="tunein">Set TuneIn Preset</button>
+            <button class="btn" data-edit="radiobrowser">Set RadioBrowser Preset</button>
             <button class="btn" data-edit="radio">Set Internet Radio Preset</button>
             <button class="btn" data-edit="soundcloud">Set SoundCloud Preset</button>
           </div>`;
         container.querySelector('[data-edit="spotify"]').addEventListener('click', () => navigate(`#/preset/${ip}/${presetId}/edit-spotify`));
         container.querySelector('[data-edit="tunein"]').addEventListener('click', () => navigate(`#/preset/${ip}/${presetId}/edit-tunein`));
+        container.querySelector('[data-edit="radiobrowser"]').addEventListener('click', () => navigate(`#/preset/${ip}/${presetId}/edit-radiobrowser`));
         container.querySelector('[data-edit="radio"]').addEventListener('click', () => navigate(`#/preset/${ip}/${presetId}/edit-radio`));
         container.querySelector('[data-edit="soundcloud"]').addEventListener('click', () => navigate(`#/preset/${ip}/${presetId}/edit-soundcloud`));
         return;
@@ -1155,6 +1167,7 @@ function renderPresetDetail(main, ip, presetId) {
         <div class="btn-group mt-1">
           <button class="btn btn-sm" data-edit="spotify">Edit (Spotify)</button>
           <button class="btn btn-sm" data-edit="tunein">Edit (TuneIn)</button>
+          <button class="btn btn-sm" data-edit="radiobrowser">Edit (RadioBrowser)</button>
           <button class="btn btn-sm" data-edit="radio">Edit (Radio)</button>
           <button class="btn btn-sm" data-edit="soundcloud">Edit (SoundCloud)</button>
         </div>
@@ -1180,6 +1193,7 @@ function renderPresetDetail(main, ip, presetId) {
 
       container.querySelector('[data-edit="spotify"]').addEventListener('click', () => navigate(`#/preset/${ip}/${presetId}/edit-spotify`));
       container.querySelector('[data-edit="tunein"]').addEventListener('click', () => navigate(`#/preset/${ip}/${presetId}/edit-tunein`));
+      container.querySelector('[data-edit="radiobrowser"]').addEventListener('click', () => navigate(`#/preset/${ip}/${presetId}/edit-radiobrowser`));
       container.querySelector('[data-edit="radio"]').addEventListener('click', () => navigate(`#/preset/${ip}/${presetId}/edit-radio`));
       container.querySelector('[data-edit="soundcloud"]').addEventListener('click', () => navigate(`#/preset/${ip}/${presetId}/edit-soundcloud`));
     } catch (err) {
@@ -1434,7 +1448,140 @@ function renderEditTuneInPreset(main, ip, presetId) {
 }
 
 // -------------------------------------------------------------------
-// 7.7: Edit Internet Radio Preset
+// 7.7: Edit Radio Browser Preset
+// -------------------------------------------------------------------
+
+function renderEditRadioBrowserPreset(main, ip, presetId) {
+  main.innerHTML = `
+    <div class="page-header">
+      <button class="back-btn" id="back-btn">&#x2190;</button>
+      <h1>Radio Browser Preset ${escapeHtml(presetId)}</h1>
+    </div>
+    <div class="card mb-2">
+      <div class="form-group">
+        <label>Search Radio Browser</label>
+        <div style="display:flex;gap:0.5rem">
+          <input id="rb-search" type="text" placeholder="Search stations...">
+          <button class="btn btn-primary" id="rb-search-btn">Search</button>
+        </div>
+      </div>
+    </div>
+    <div id="rb-results"></div>
+    <div id="rb-detail" style="display:none"></div>`;
+
+  main.querySelector('#back-btn').addEventListener('click', () => navigate(`#/preset/${ip}/${presetId}`));
+
+  const searchInput = main.querySelector('#rb-search');
+  const searchBtn = main.querySelector('#rb-search-btn');
+  const resultsEl = main.querySelector('#rb-results');
+  const detailEl = main.querySelector('#rb-detail');
+
+  async function doSearch() {
+    const query = searchInput.value.trim();
+    if (!query) return;
+    resultsEl.innerHTML = '<div class="spinner"></div>';
+    detailEl.style.display = 'none';
+    try {
+      const xml = await api.radiobrowserGet('search.ashx', { query });
+      const outlines = xml.querySelectorAll('outline[type="audio"]');
+      if (outlines.length === 0) {
+        resultsEl.innerHTML = '<div class="empty-state"><p>No stations found</p></div>';
+        return;
+      }
+      resultsEl.innerHTML = '';
+      outlines.forEach(o => {
+        const guideId = o.getAttribute('guide_id') || '';
+        const name = o.getAttribute('text') || '';
+        const subtext = o.getAttribute('subtext') || '';
+        const image = o.getAttribute('image') || '';
+        const bitrate = o.getAttribute('bitrate') || '';
+
+        const item = document.createElement('div');
+        item.className = 'list-item';
+        item.style.cursor = 'pointer';
+        item.innerHTML = `
+          ${image
+            ? `<img class="list-item-thumb" src="${escapeHtml(image)}" alt="">`
+            : `<div class="list-item-thumb-placeholder">&#x1F4FB;</div>`}
+          <div class="list-item-body">
+            <div class="list-item-title">${escapeHtml(name)}</div>
+            <div class="list-item-subtitle">${escapeHtml(subtext)}${bitrate ? ' &middot; ' + escapeHtml(bitrate) + ' kbps' : ''}</div>
+          </div>`;
+        item.addEventListener('click', () => showStationDetail(guideId, name, image));
+        resultsEl.appendChild(item);
+      });
+    } catch (err) {
+      resultsEl.innerHTML = `<p class="text-muted">${escapeHtml(err.message)}</p>`;
+      showToast(err.message, 'error');
+    }
+  }
+
+  searchBtn.addEventListener('click', doSearch);
+  searchInput.addEventListener('keydown', e => { if (e.key === 'Enter') doSearch(); });
+
+  async function showStationDetail(guideId, fallbackName, fallbackImage) {
+    resultsEl.style.display = 'none';
+    detailEl.style.display = 'block';
+    detailEl.innerHTML = '<div class="spinner"></div>';
+
+    let stationName = fallbackName;
+    let stationLogo = fallbackImage;
+    let stationSlogan = '';
+    let stationDescription = '';
+    let stationLocation = '';
+    let stationGenre = '';
+
+    try {
+      const xml = await api.radiobrowserGet('describe.ashx', { id: guideId });
+      const outline = xml.querySelector('outline');
+      if (outline) {
+        stationName = outline.getAttribute('text') || stationName;
+        stationLogo = outline.getAttribute('image') || stationLogo;
+        stationSlogan = outline.getAttribute('slogan') || '';
+        stationDescription = outline.getAttribute('description') || '';
+        stationLocation = outline.getAttribute('location') || '';
+        stationGenre = outline.getAttribute('genre_name') || '';
+      }
+    } catch { /* use fallback */ }
+
+    detailEl.innerHTML = `
+      <div class="card">
+        <div style="display:flex;gap:1rem;align-items:flex-start;margin-bottom:1rem">
+          ${stationLogo
+            ? `<img src="${escapeHtml(stationLogo)}" alt="" style="width:80px;height:80px;border-radius:var(--radius-sm);object-fit:cover">`
+            : ''}
+          <div>
+            <h2>${escapeHtml(stationName)}</h2>
+            ${stationSlogan ? `<p class="text-muted text-sm">${escapeHtml(stationSlogan)}</p>` : ''}
+          </div>
+        </div>
+        ${stationDescription ? `<p class="mb-1 text-sm">${escapeHtml(stationDescription)}</p>` : ''}
+        ${stationLocation ? `<p class="text-muted text-sm mb-1">Location: ${escapeHtml(stationLocation)}</p>` : ''}
+        ${stationGenre ? `<p class="text-muted text-sm mb-2">Genre: ${escapeHtml(stationGenre)}</p>` : ''}
+        <div class="btn-group">
+          <button class="btn btn-primary" id="rb-save">Save as Preset ${escapeHtml(presetId)}</button>
+          <button class="btn" id="rb-back-to-results">Back to Results</button>
+        </div>
+      </div>`;
+
+    detailEl.querySelector('#rb-back-to-results').addEventListener('click', () => {
+      detailEl.style.display = 'none';
+      resultsEl.style.display = '';
+    });
+
+    detailEl.querySelector('#rb-save').addEventListener('click', async () => {
+      const xmlBody = `<preset id="${presetId}"><ContentItem source="RADIO_BROWSER" type="stationurl" location="/stations/byuuid/${escapeXml(guideId)}" isPresetable="true"><itemName>${escapeXml(stationName)}</itemName><containerArt>${escapeXml(stationLogo)}</containerArt></ContentItem></preset>`;
+      try {
+        await api.speakerPost(ip, 'storePreset', xmlBody);
+        showToast('Preset saved', 'success');
+        navigate(`#/preset/${ip}/${presetId}`);
+      } catch (err) { showToast(err.message, 'error'); }
+    });
+  }
+}
+
+// -------------------------------------------------------------------
+// 7.7a: Edit Internet Radio Preset
 // -------------------------------------------------------------------
 
 function renderEditInternetRadioPreset(main, ip, presetId) {

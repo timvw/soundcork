@@ -74,9 +74,7 @@ def make_client(monkeypatch, speakers: FakeSpeakers | None = None):
     monkeypatch.chdir(Path(__file__).resolve().parents[1])
     app = FastAPI()
     fake_speakers = speakers or FakeSpeakers()
-    app.include_router(
-        get_miniapp_router(cast(Any, FakeDatastore()), cast(Any, fake_speakers))
-    )
+    app.include_router(get_miniapp_router(cast(Any, FakeDatastore()), cast(Any, fake_speakers)))
     return TestClient(app), fake_speakers
 
 
@@ -90,10 +88,7 @@ def test_dashboard_decodes_display_cookies(monkeypatch):
     response = client.get(
         "/miniapp/dashboard",
         headers={
-            "Cookie": (
-                f"soundcork_account_id={ACCOUNT_ID}; "
-                "soundcork_account_label=%C3%9A%C4%8Det%20lo%C5%BEnice; "
-            )
+            "Cookie": (f"soundcork_account_id={ACCOUNT_ID}; soundcork_account_label=%C3%9A%C4%8Det%20lo%C5%BEnice; ")
         },
     )
 

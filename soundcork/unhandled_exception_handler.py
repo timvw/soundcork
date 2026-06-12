@@ -82,9 +82,7 @@ class NotFoundHandler:
         tmp.write_text(text, encoding="utf-8")
         os.replace(tmp, path)
 
-    def _dump_request(
-        self, log_dir: Path, prefix: str, request: Request, body: bytes
-    ) -> tuple[Path, Path]:
+    def _dump_request(self, log_dir: Path, prefix: str, request: Request, body: bytes) -> tuple[Path, Path]:
         headers = dict(request.headers)
 
         ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
@@ -112,9 +110,7 @@ class NotFoundHandler:
             "body_len": len(body),
         }
 
-        self._atomic_write_text(
-            meta_path, json.dumps(meta, ensure_ascii=False, indent=2)
-        )
+        self._atomic_write_text(meta_path, json.dumps(meta, ensure_ascii=False, indent=2))
         self._atomic_write_bytes(body_path, body)
 
         if self._is_probably_text(body):
@@ -122,9 +118,7 @@ class NotFoundHandler:
 
         return meta_path, body_path
 
-    async def dump_unhandled_requests(
-        self, request: Request, exc: StarletteHTTPException
-    ) -> StarletteResponse:
+    async def dump_unhandled_requests(self, request: Request, exc: StarletteHTTPException) -> StarletteResponse:
         if self._logging:
             if exc.status_code == 404:
                 path = request.url.path

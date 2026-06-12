@@ -3,7 +3,9 @@ import ipaddress
 import json
 import logging
 import os
-from urllib.parse import urlparse
+import socket
+import xml.etree.ElementTree as ET
+from urllib.parse import urljoin, urlparse
 
 import httpx
 import websockets
@@ -47,6 +49,30 @@ _IMAGE_PROXY_ALLOWED_DOMAINS = frozenset(
     }
 )
 
+# Additional domains discovered at runtime via RadioBrowser favicons.
+# Bounded to prevent unbounded memory growth / persistent open proxy.
+_RADIOBROWSER_DOMAIN_CACHE_MAX = 500
+_radiobrowser_image_domains: dict[str, None] = {}
+
+
+def _register_radiobrowser_favicon(url: str) -> None:
+    """Add the hostname of a RadioBrowser favicon to the dynamic allowlist (bounded)."""
+    if not url:
+        return
+    try:
+        parsed = urlparse(url)
+        hostname = (parsed.hostname or "").lower()
+        if parsed.scheme not in ("http", "https"):
+            return
+        if hostname and not _is_private_ip(hostname) and not _hostname_resolves_to_blocked_ip(hostname):
+            if len(_radiobrowser_image_domains) >= _RADIOBROWSER_DOMAIN_CACHE_MAX:
+                # Evict oldest entry (insertion-ordered dict)
+                _radiobrowser_image_domains.pop(next(iter(_radiobrowser_image_domains)))
+            _radiobrowser_image_domains[hostname] = None
+    except Exception:
+        pass
+
+
 # Allowed mgmt proxy paths (prevents exposing token endpoints)
 _MGMT_ALLOWED_PATHS = frozenset(
     {
@@ -69,14 +95,42 @@ def _is_private_ip(hostname: str) -> bool:
         return False
 
 
+def _hostname_resolves_to_blocked_ip(hostname: str) -> bool:
+    """Return True when DNS for hostname points to non-routable/internal IP ranges."""
+    try:
+        infos = socket.getaddrinfo(hostname, None, socket.AF_UNSPEC, socket.SOCK_STREAM)
+    except Exception:
+        return True
+
+    for info in infos:
+        try:
+            addr = ipaddress.ip_address(info[4][0])
+        except ValueError:
+            return True
+        if (
+            addr.is_private
+            or addr.is_loopback
+            or addr.is_link_local
+            or addr.is_reserved
+            or addr.is_multicast
+            or addr.is_unspecified
+        ):
+            return True
+    return False
+
+
 def _is_allowed_image_url(url: str) -> bool:
     """Check if a URL is on an allowed CDN domain and not a private IP."""
     try:
         parsed = urlparse(url)
-        hostname = parsed.hostname or ""
-        if _is_private_ip(hostname):
+        hostname = (parsed.hostname or "").lower()
+        if parsed.scheme not in ("http", "https") or not hostname:
             return False
-        return hostname in _IMAGE_PROXY_ALLOWED_DOMAINS
+        if _is_private_ip(hostname) or _hostname_resolves_to_blocked_ip(hostname):
+            return False
+        if hostname in _IMAGE_PROXY_ALLOWED_DOMAINS or hostname in _radiobrowser_image_domains:
+            return True
+        return False
     except Exception:
         return False
 
@@ -401,6 +455,7 @@ _TRANSPARENT_1X1 = (
     b"\x00\x00\x00\nIDATx\x9cc\x00\x01\x00\x00\x05\x00\x01"
     b"\r\n\xb4\x00\x00\x00\x00IEND\xaeB`\x82"
 )
+_REDIRECT_STATUS_CODES = {301, 302, 303, 307, 308}
 
 
 @router.get("/api/image")
@@ -411,10 +466,21 @@ async def proxy_image(url: str):
     if not _is_allowed_image_url(url):
         return JSONResponse({"detail": "Forbidden: URL domain not allowed"}, status_code=403)
     try:
-        async with httpx.AsyncClient(follow_redirects=True) as client:
-            resp = await client.get(url, timeout=SPEAKER_TIMEOUT)
+        current_url = url
+        async with httpx.AsyncClient(follow_redirects=False) as client:
+            for _ in range(5):
+                if not _is_allowed_image_url(current_url):
+                    return JSONResponse({"detail": "Forbidden: URL domain not allowed"}, status_code=403)
+                resp = await client.get(current_url, timeout=SPEAKER_TIMEOUT)
+                if resp.status_code not in _REDIRECT_STATUS_CODES:
+                    break
+                location = resp.headers.get("location")
+                if not location:
+                    break
+                current_url = urljoin(current_url, location)
+            else:
+                return Response(content="Too many redirects", status_code=400)
         if resp.status_code >= 400:
-            # Upstream refused — return transparent pixel so <img> doesn't break
             return Response(
                 content=_TRANSPARENT_1X1,
                 status_code=200,
@@ -443,8 +509,8 @@ async def proxy_image(url: str):
         )
 
 
-# --- TuneIn Proxy API ---
-# Avoids CORS issues when the browser needs to search TuneIn.
+# --- Radio Proxy API ---
+# Avoids CORS issues when the browser needs to search radio providers.
 
 
 @router.get("/api/tunein/{path:path}")
@@ -466,6 +532,74 @@ async def proxy_tunein(path: str, request: Request):
     except (httpx.ConnectError, httpx.TimeoutException) as e:
         logger.warning(f"TuneIn proxy error: {e}")
         return Response(content="TuneIn unreachable", status_code=502)
+
+
+@router.get("/api/radiobrowser/{path:path}")
+async def proxy_radiobrowser(path: str, request: Request):
+    """Proxy GET requests to the RadioBrowser API and convert to SoundTouch XML."""
+    params = dict(request.query_params)
+    rb_api = _settings.radiobrowser_api_url
+    try:
+        if path == "search.ashx":
+            query = params.get("query", "")
+            url = f"{rb_api}/xml/stations/search"
+            rb_params = {"name": query, "limit": 50}
+        elif path == "describe.ashx":
+            from soundcork.bmx import _is_valid_station_id
+
+            station_id = params.get("id", "")
+            if not _is_valid_station_id(station_id):
+                return Response(content="Invalid station ID", status_code=400)
+            url = f"{rb_api}/xml/stations/byuuid/{station_id}"
+            rb_params = {}
+        else:
+            return Response(content="Not Found", status_code=404)
+
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(url, params=rb_params, timeout=SPEAKER_TIMEOUT)
+
+        if resp.status_code != 200:
+            return Response(content=resp.content, status_code=resp.status_code)
+
+        rb_root = ET.fromstring(resp.content)
+        opml_root = ET.Element("opml", version="1")
+        body = ET.SubElement(opml_root, "body")
+
+        if path == "search.ashx":
+            for station in rb_root.findall("station"):
+                outline = ET.SubElement(body, "outline")
+                outline.set("type", "audio")
+                outline.set("guide_id", station.get("stationuuid", ""))
+                outline.set("text", station.get("name", ""))
+                codec_val = station.get("codec", "UNKNOWN")
+                hls_val = " [HLS]" if station.get("hls") == "1" else ""
+                bitrate = station.get("bitrate")
+                bitrate_val = f" {bitrate}kbps" if bitrate and bitrate != "0" else ""
+                outline.set("subtext", f"{station.get('country', '')} - {codec_val}{hls_val}{bitrate_val}")
+                favicon = station.get("favicon", "")
+                outline.set("image", favicon)
+                outline.set("bitrate", station.get("bitrate", ""))
+                _register_radiobrowser_favicon(favicon)
+        elif path == "describe.ashx":
+            station = rb_root.find("station")
+            if station is not None:
+                outline = ET.SubElement(body, "outline")
+                outline.set("type", "audio")
+                outline.set("guide_id", station.get("stationuuid", ""))
+                outline.set("text", station.get("name", ""))
+                favicon = station.get("favicon", "")
+                outline.set("image", favicon)
+                _register_radiobrowser_favicon(favicon)
+                outline.set("description", station.get("tags", ""))
+                outline.set("location", station.get("country", ""))
+                outline.set("genre_name", station.get("tags", "").split(",")[0] if station.get("tags") else "")
+
+        content = ET.tostring(opml_root, encoding="utf-8")
+        return Response(content=content, media_type="text/xml")
+
+    except Exception as e:
+        logger.warning(f"RadioBrowser proxy error: {e}")
+        return Response(content="RadioBrowser error", status_code=502)
 
 
 # --- SoundCloud Proxy API ---

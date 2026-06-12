@@ -179,6 +179,7 @@ async def power_on(ip: str):
         async with httpx.AsyncClient(timeout=SPEAKER_TIMEOUT) as client:
             r = await client.get(_speaker_url(ip, "/nowPlaying"))
             import xml.etree.ElementTree as ET
+
             xml = ET.fromstring(r.content)
             if xml.attrib.get("source", "") == "STANDBY":
                 r = await _key_press(client, ip, "POWER")
@@ -196,6 +197,7 @@ async def power_off(ip: str):
         async with httpx.AsyncClient(timeout=SPEAKER_TIMEOUT) as client:
             r = await client.get(_speaker_url(ip, "/nowPlaying"))
             import xml.etree.ElementTree as ET
+
             xml = ET.fromstring(r.content)
             if xml.attrib.get("source", "") != "STANDBY":
                 r = await _key_press(client, ip, "POWER")
@@ -237,14 +239,8 @@ async def zone_set(request: Request):
     master_device_id = body["master_device_id"]
     slaves = body.get("slaves", [])
 
-    members = "".join(
-        f'<member ipaddress="{s["ip"]}">{s["device_id"]}</member>'
-        for s in slaves
-    )
-    zone_xml = (
-        f'<zone master="{master_device_id}" senderIPAddress="{master_ip}">'
-        f"{members}</zone>"
-    )
+    members = "".join(f'<member ipaddress="{s["ip"]}">{s["device_id"]}</member>' for s in slaves)
+    zone_xml = f'<zone master="{master_device_id}" senderIPAddress="{master_ip}">{members}</zone>'
     return await _proxy_post(master_ip, "/setZone", zone_xml.encode())
 
 

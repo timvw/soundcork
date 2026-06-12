@@ -51,10 +51,7 @@ def test_navigate_uses_ashx_parser_for_opml_browse_urls(monkeypatch):
     assert response.bmx_sections[0].items[0].name == "News"
 
     navigate_href = response.bmx_sections[0].items[0].links.bmx_navigate.href
-    assert (
-        decode_navigate_href(navigate_href)
-        == "http://opml.radiotime.com/Browse.ashx?c=news&render=json"
-    )
+    assert decode_navigate_href(navigate_href) == "http://opml.radiotime.com/Browse.ashx?c=news&render=json"
 
 
 def test_search_url_encodes_spaces_and_more_link_uses_encoded_query(monkeypatch):
@@ -88,18 +85,12 @@ def test_search_url_encodes_spaces_and_more_link_uses_encoded_query(monkeypatch)
     response = tunein_search_v1("radio paradise")
 
     assert " " not in requested_urls[0]
-    requested_query = urllib.parse.parse_qs(
-        urllib.parse.urlsplit(requested_urls[0]).query
-    )
+    requested_query = urllib.parse.parse_qs(urllib.parse.urlsplit(requested_urls[0]).query)
     assert requested_query["query"] == ["radio paradise"]
 
     section_href = response.bmx_sections[0].links.self.href
     decoded_section_uri = decode_navigate_href(section_href)
     assert " " not in decoded_section_uri
-    decoded_query = urllib.parse.parse_qs(
-        urllib.parse.urlsplit(decoded_section_uri).query
-    )
+    decoded_query = urllib.parse.parse_qs(urllib.parse.urlsplit(decoded_section_uri).query)
     assert decoded_query["query"] == ["radio paradise"]
-    assert response.bmx_sections[0].items[0].links.bmx_playback.href == (
-        "/v1/playback/station/s12345"
-    )
+    assert response.bmx_sections[0].items[0].links.bmx_playback.href == ("/v1/playback/station/s12345")

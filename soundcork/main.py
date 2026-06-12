@@ -1,3 +1,4 @@
+import ipaddress
 import json
 import logging
 import os
@@ -11,7 +12,7 @@ from typing import Annotated
 
 from fastapi import Depends, FastAPI, HTTPException, Path, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi_etag import Etag
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.responses import Response as StarletteResponse
@@ -20,6 +21,7 @@ from soundcork.admin import get_admin_router
 from soundcork.bmx import (
     bmx_services_json,
     play_custom_stream,
+    radiobrowser_playback,
     tunein_navigate_profile_v1,
     tunein_navigate_v1,
     tunein_playback,
@@ -246,6 +248,14 @@ _EXEMPT_PREFIXES = (
 )
 
 
+def _parse_ip_literal(value: str) -> str | None:
+    """Return a normalized IP literal, or None if the input is not an IP."""
+    try:
+        return str(ipaddress.ip_address(value.strip()))
+    except ValueError:
+        return None
+
+
 @app.middleware("http")
 async def speaker_ip_restriction(request: Request, call_next):
     """Block Bose protocol requests from unknown IPs."""
@@ -255,22 +265,30 @@ async def speaker_ip_restriction(request: Request, call_next):
     if path == "/" or any(path.startswith(p) for p in _EXEMPT_PREFIXES):
         return await call_next(request)
 
-    # Determine client IP from X-Forwarded-For (behind ingress/proxy).
-    # Take the LAST value: the reverse proxy (Traefik) appends the real client
-    # IP as the rightmost entry.  Earlier entries are attacker-controlled.
-    forwarded = request.headers.get("x-forwarded-for")
-    if forwarded:
-        client_ip = forwarded.split(",")[-1].strip()
-    else:
-        client_ip = request.client.host if request.client else ""
+    # Trust forwarding headers only when the direct peer is an explicitly trusted proxy.
+    # For X-Forwarded-For we use the right-most IP, which is the address appended by
+    # the trusted proxy and cannot be injected by clients.
+    direct_ip = request.client.host if request.client else ""
+    forwarded = request.headers.get("x-forwarded-for", "")
+    client_ip = direct_ip
+
+    trusted_proxies = {ip.strip() for ip in settings.trusted_proxy_ips.split(",") if ip.strip()}
+    if direct_ip in trusted_proxies and forwarded:
+        for part in reversed(forwarded.split(",")):
+            parsed = _parse_ip_literal(part)
+            if parsed:
+                client_ip = parsed
+                break
 
     allowlist = get_speaker_allowlist()
     if not allowlist.is_allowed(client_ip):
         logger.warning(
-            "Blocked %s %s from %s (not a registered speaker)",
+            "Blocked %s %s from %s (direct=%s, xff=%s)",
             request.method,
             path,
             client_ip,
+            direct_ip,
+            forwarded or "",
         )
         return JSONResponse(
             {"detail": "Forbidden: unknown speaker IP"},
@@ -490,6 +508,24 @@ async def bmx_tunein_report(request: Request):
             content_type,
             headers,
             body[:2000].decode("utf-8", errors="replace"),
+        )
+    return Response(status_code=200)
+
+
+@app.post(
+    "/bmx/radiobrowser/v1/report",
+    tags=["analytics"],
+    status_code=HTTPStatus.OK,
+)
+async def bmx_radiobrowser_report(request: Request):
+    """RadioBrowser playback reporting."""
+    body = await request.body()
+    if body:
+        content_type = request.headers.get("content-type", "")
+        logger.info(
+            "STUB bmx/radiobrowser/report content-type=%s body-bytes=%d",
+            content_type,
+            len(body),
         )
     return Response(status_code=200)
 
@@ -1186,7 +1222,7 @@ def bmx_tunein() -> Service:
     response_model_exclude_none=True,
     tags=["bmx"],
 )
-def bmx_playback(station_id: str) -> BmxPlaybackResponse:
+def bmx_playback(station_id: str, request: Request) -> BmxPlaybackResponse:
     if station_id.startswith("sc-"):
         track_id = station_id[3:]
         _sc_validate_track_id(track_id)
@@ -1204,7 +1240,119 @@ def bmx_playback(station_id: str) -> BmxPlaybackResponse:
             name=info.get("title", "SoundCloud"),
             streamType="liveRadio",
         )
+    # Detect RadioBrowser UUIDs via regex (TuneIn IDs are alphanumeric like "s12345")
+    from soundcork.bmx import _is_valid_station_id
+
+    if _is_valid_station_id(station_id):
+        transcode = request.query_params.get("transcode", "0") == "1"
+        return radiobrowser_playback(
+            station_id,
+            transcode=transcode,
+            bmx_server=settings.base_url,
+            api_url=settings.radiobrowser_api_url,
+            ssl_downgrade=settings.radiobrowser_ssl_downgrade,
+        )
     return tunein_playback(station_id)
+
+
+@app.get(
+    "/bmx/radiobrowser/v1/playback/station/{station_id}",
+    response_model_exclude_none=True,
+    tags=["bmx"],
+)
+def bmx_radiobrowser_playback(station_id: str, request: Request) -> BmxPlaybackResponse:
+    logger.debug("BMX RadioBrowser Playback for %s (Headers: %s)", station_id, request.headers)
+    transcode = request.query_params.get("transcode", "0") == "1"
+    return radiobrowser_playback(
+        station_id,
+        transcode=transcode,
+        bmx_server=settings.base_url,
+        api_url=settings.radiobrowser_api_url,
+        ssl_downgrade=settings.radiobrowser_ssl_downgrade,
+    )
+
+
+@app.get("/bmx/radiobrowser/v1/transcode/{station_id}")
+async def bmx_radiobrowser_transcode(station_id: str):
+    """Transcode a RadioBrowser station to high-compatibility MP3 using ffmpeg."""
+    import asyncio
+
+    from soundcork.bmx import get_radiobrowser_station_url
+
+    url = get_radiobrowser_station_url(station_id, api_url=settings.radiobrowser_api_url)
+    if not url:
+        raise HTTPException(status_code=404, detail="Station not found")
+
+    logger.info("Transcoding station %s from %s", station_id, url)
+
+    cmd = [
+        "ffmpeg",
+        "-loglevel",
+        "error",
+        "-reconnect",
+        "1",
+        "-reconnect_streamed",
+        "1",
+        "-reconnect_delay_max",
+        "5",
+        "-i",
+        url,
+        "-vn",
+        "-acodec",
+        "libmp3lame",
+        "-ab",
+        "128k",
+        "-ar",
+        "44100",
+        "-ac",
+        "2",
+        "-f",
+        "mp3",
+        "pipe:1",
+    ]
+
+    try:
+        process = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+    except FileNotFoundError:
+        raise HTTPException(status_code=503, detail="ffmpeg is not installed on the server")
+    except OSError as exc:
+        logger.error("Failed to start ffmpeg: %s", exc)
+        raise HTTPException(status_code=500, detail="Failed to start transcoding process")
+
+    if process.stdout is None:
+        process.terminate()
+        await process.wait()
+        raise HTTPException(status_code=500, detail="Transcoding process has no stdout pipe")
+
+    async def iterfile():
+        try:
+            while True:
+                data = await process.stdout.read(8192)
+                if not data:
+                    err = await process.stderr.read()
+                    if err:
+                        logger.error("FFMPEG Error: %s", err.decode())
+                    break
+                yield data
+        finally:
+            process.terminate()
+            await process.wait()
+
+    return StreamingResponse(
+        iterfile(),
+        media_type="audio/mpeg",
+        headers={
+            "Accept-Ranges": "none",
+            "Cache-Control": "no-cache",
+            "Connection": "close",
+            "Content-Type": "audio/mpeg",
+            "icy-name": "RadioBrowser Stream",
+        },
+    )
 
 
 @app.get(
@@ -1574,6 +1722,24 @@ app.add_api_route(
     tags=["bmx-alias"],
 )
 app.add_api_route(
+    "/radiobrowser/v1/playback/station/{station_id}",
+    bmx_radiobrowser_playback,
+    methods=["GET"],
+    tags=["bmx-alias"],
+)
+app.add_api_route(
+    "/radiobrowser/v1/report",
+    bmx_radiobrowser_report,
+    methods=["POST"],
+    tags=["bmx-alias"],
+)
+app.add_api_route(
+    "/radiobrowser/v1/transcode/{station_id}",
+    bmx_radiobrowser_transcode,
+    methods=["GET"],
+    tags=["bmx-alias"],
+)
+app.add_api_route(
     "/orion/v1/playback/station/{data}",
     bmx_orion_playback,
     methods=["GET", "POST"],
@@ -1822,7 +1988,5 @@ handler = NotFoundHandler(settings.unhandled_log_dir)
 
 
 @app.exception_handler(StarletteHTTPException)
-async def unhandled_requests(
-    request: Request, exc: StarletteHTTPException
-) -> StarletteResponse:
+async def unhandled_requests(request: Request, exc: StarletteHTTPException) -> StarletteResponse:
     return await handler.dump_unhandled_requests(request, exc)

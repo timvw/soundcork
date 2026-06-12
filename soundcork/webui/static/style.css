@@ -23,6 +23,7 @@
   --info: #2196f3;
   --badge-spotify: #1db954;
   --badge-tunein: #2196f3;
+  --badge-radiobrowser: #5865f2;
   --badge-radio: #ff9800;
   --badge-product: #9e9e9e;
   --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.08);
@@ -539,6 +540,7 @@ input[type="range"]::-moz-range-thumb {
 }
 .badge-spotify { background: var(--badge-spotify); }
 .badge-tunein { background: var(--badge-tunein); }
+.badge-radiobrowser { background: var(--badge-radiobrowser); }
 .badge-radio { background: var(--badge-radio); }
 .badge-product { background: var(--badge-product); }
 
