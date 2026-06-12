@@ -708,7 +708,15 @@ def play_custom_stream(data: str) -> BmxPlaybackResponse:
 
 
 def _is_safe_stream_url(url: str) -> bool:
-    """Reject URLs targeting internal/private networks (SSRF protection)."""
+    """Reject URLs targeting internal/private networks (SSRF protection).
+
+    Note: DNS is resolved at validation time.  A DNS-rebinding attack could
+    return a public IP here and a private IP when the speaker (or ffmpeg)
+    later connects.  Full mitigation would require connecting through a
+    resolved IP or re-validating at connection time, which is not feasible
+    for URLs handed to speakers.  This check is defence-in-depth against
+    accidentally relaying obviously-internal URLs from RadioBrowser.
+    """
     try:
         parsed = urllib.parse.urlparse(url)
         hostname = parsed.hostname or ""
