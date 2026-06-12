@@ -387,7 +387,15 @@ spotify-primer[1735]: Requesting Spotify token from soundcork...
 spotify-primer[1735]: Got token for user {username} (BQDUAb0_2h...)
 spotify-primer[1735]: addUser accepted (status 101) — verifying...
 spotify-primer[1735]: Speaker primed successfully (activeUser={username})
+spotify-primer[1735]: Primer complete (ZeroConf only, no activation)
 ```
+
+The script only registers the speaker with Spotify Connect — it does **not**
+transfer playback to the speaker. An earlier version called
+`PUT /v1/me/player` (via `/mgmt/spotify/activate-speaker`) to make the
+speaker the active Spotify device, but this caused Spotify to continuously
+push audio even when the speaker was playing web radio, eventually
+destabilizing the embedded Spotify SDK.
 
 ### File layout on the speaker
 
@@ -428,6 +436,74 @@ the `scripts/spotify-prime-speaker` script:
 This requires `curl` and `jq` on your workstation. It discovers the Spotify
 username from the token, checks the speaker's current status, and primes it if
 needed.
+
+## Step 6: Install Spotify Watchdog (Recommended)
+
+The speaker's embedded Spotify SDK (`STSCertified`) can enter a tight retry
+loop when a Spotify CDN request fails — retrying with no backoff until it
+consumes all CPU. When this happens, port 8200 (ZeroConf) becomes unresponsive
+and Spotify presets stop working. The only recovery is a reboot.
+
+The watchdog script monitors ZeroConf health and automatically reboots the
+speaker when it detects this condition. It is playback-aware: if the speaker
+is actively streaming non-Spotify audio (e.g. TuneIn/web radio), it skips
+the reboot since a stuck ZeroConf endpoint doesn't matter when nobody is
+using Spotify. After reboot, the boot primer (Step 5) re-establishes the
+Spotify session.
+
+### Prerequisites
+
+- Spotify boot primer installed (Step 5)
+- SSH access configured (Steps 1 and 4)
+
+### 1. Install the watchdog script
+
+```sh
+cat scripts/spotify-watchdog | ssh root@<speaker-ip> \
+    "cat > /mnt/nv/bin/spotify-watchdog && chmod +x /mnt/nv/bin/spotify-watchdog"
+```
+
+### 2. Update rc.local
+
+Add the watchdog after the boot primer:
+
+```sh
+ssh root@<speaker-ip> 'cat >> /mnt/nv/rc.local' << 'EOF'
+
+# Spotify watchdog — monitors ZeroConf health, reboots if stuck
+/mnt/nv/bin/spotify-watchdog &
+EOF
+```
+
+### 3. Test it
+
+```sh
+# Verify it starts
+ssh root@<speaker-ip> /mnt/nv/bin/spotify-watchdog &
+ssh root@<speaker-ip> 'logread | grep spotify-watchdog'
+```
+
+### How it works
+
+The watchdog waits 3 minutes after boot (giving the primer time to complete),
+then checks ZeroConf every 5 minutes. If ZeroConf is unresponsive for 3
+consecutive checks (15 minutes), it reboots the speaker.
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `STARTUP_DELAY` | 180s | Wait after boot before first check |
+| `CHECK_INTERVAL` | 300s | Seconds between health checks |
+| `FAIL_THRESHOLD` | 3 | Consecutive failures before reboot |
+
+### Example log output
+
+```
+spotify-watchdog[1820]: Watchdog starting (startup delay 180s, check every 300s, reboot after 3 failures)
+spotify-watchdog[1820]: ZeroConf unresponsive (failure 1/3)
+spotify-watchdog[1820]: ZeroConf unresponsive (failure 2/3)
+spotify-watchdog[1820]: ZeroConf unresponsive (failure 3/3)
+spotify-watchdog[1820]: ZeroConf stuck but speaker is playing non-Spotify audio — skipping reboot
+```
 
 ## Warnings
 
