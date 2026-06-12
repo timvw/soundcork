@@ -15,6 +15,7 @@ We'll maintain a forum post with the [Current Status of Bose Cloud Services](htt
 | Feature | Status | Notes |
 |---------|--------|-------|
 | TuneIn radio presets | Working | Presets 1-6, station playback |
+| RadioBrowser presets | Working | Search & save [radio-browser.info](https://www.radio-browser.info) stations via Web UI |
 | Spotify Connect | Working | Cast from the Spotify app — independent of Bose servers |
 | Spotify presets | Working | Requires a [one-time kick-start](docs/spotify.md#fixing-spotify-presets) via Spotify Connect |
 | Web UI | Working | Browser-based speaker control at `/webui/` |
@@ -131,6 +132,7 @@ See [Home Assistant docs](docs/home-assistant.md) for setup and API reference.
 - [Architecture](docs/architecture.md) — Bose servers, proxy modes, circuit breaker, data flows
 - [Home Assistant](docs/home-assistant.md) — HA integration, `/api/v1` router, Lovelace card
 - [Spotify Guide](docs/spotify.md) — Spotify Connect vs SoundTouch Spotify, preset fix
+- [RadioBrowser Guide](docs/radio-browser.md) — Search and play community radio stations
 - [API Specification](docs/API_Spec.md) — Reverse-engineered Bose server API
 - [Shutdown Emulation](docs/Shutdown_Emulation.md) — Test results without Bose servers
 
