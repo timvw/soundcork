@@ -34,7 +34,7 @@ set -u
 LOG_TAG="spotify-watchdog[$$]"
 ZC_URL="http://localhost:8200/zc"
 NOW_PLAYING_URL="http://localhost:8090/now_playing"
-PIDFILE="/var/run/spotify-watchdog.pid"
+LOCKDIR="/var/run/spotify-watchdog.lock"
 
 CHECK_INTERVAL="${CHECK_INTERVAL:-300}"   # seconds between health checks (5 minutes)
 FAIL_THRESHOLD="${FAIL_THRESHOLD:-3}"     # consecutive failures before reboot
@@ -63,16 +63,12 @@ log() {
     logger -s -t "$LOG_TAG" -p "$1" "$2"
 }
 
-# --- Singleton guard ---
-if [ -s "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
-    log warning "Watchdog already running (pid $(cat "$PIDFILE"))"
+# --- Singleton guard (atomic mkdir) ---
+if ! mkdir "$LOCKDIR" 2>/dev/null; then
+    log warning "Watchdog already running or stale lock exists: $LOCKDIR"
     exit 0
 fi
-if ! echo "$$" > "$PIDFILE"; then
-    log err "Cannot write pidfile: $PIDFILE"
-    exit 1
-fi
-cleanup() { rm -f "$PIDFILE"; }
+cleanup() { rmdir "$LOCKDIR" 2>/dev/null; }
 stop() { cleanup; exit 0; }
 trap cleanup EXIT
 trap stop INT TERM
@@ -119,8 +115,12 @@ do_reboot() {
         defer_count=0
     else
         sleep 2
-        reboot
-        exit 0
+        if reboot; then
+            exit 0
+        fi
+        log err "reboot command failed; watchdog continuing"
+        fail_count=0
+        defer_count=0
     fi
 }
 
