@@ -1,7 +1,10 @@
+import shutil
+import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -50,16 +53,24 @@ class FakeDatastore:
         ]
 
 
+class BrokenDeviceDatastore(FakeDatastore):
+    def get_device_info(self, account_id: str, device_id: str):
+        raise ValueError("invalid device record")
+
+
 class FakeSpeakers:
-    def __init__(self, play_result: bool = True) -> None:
+    # Codex: Keep this fake complete enough to exercise dashboard rendering.
+    def __init__(self, play_result: bool = True, online: bool = True) -> None:
         self.play_result = play_result
+        self.online = online
         self.play_calls: list[tuple[str, str]] = []
+        self.stop_calls: list[str] = []
 
     def all_devices(self):
         return {
             DEVICE_ID: SimpleNamespace(
                 account=ACCOUNT_ID,
-                online=True,
+                online=self.online,
                 in_soundcork=True,
                 marge_server="Soundcork",
             )
@@ -69,12 +80,47 @@ class FakeSpeakers:
         self.play_calls.append((device_id, content_item_id))
         return self.play_result
 
+    def get_now_playing_status(self, device_id: str):
+        assert device_id == DEVICE_ID
+        return SimpleNamespace(
+            StationName="Rádio Proglas",
+            ContentItem=SimpleNamespace(Name="Rádio Proglas"),
+            ContainerArtUrl="/art.png",
+            PlayStatus="PLAY_STATE",
+        )
 
-def make_client(monkeypatch, speakers: FakeSpeakers | None = None):
-    monkeypatch.chdir(Path(__file__).resolve().parents[1])
+    def get_volume(self, device_id: str):
+        assert device_id == DEVICE_ID
+        return SimpleNamespace(Actual=25, Target=25, IsMuted=False)
+
+    def get_now_playing_and_volume(self, device_id: str, timeout: float):
+        assert timeout > 0
+        return self.get_now_playing_status(device_id), self.get_volume(device_id)
+
+    def stop_playback(self, device_id: str) -> bool:
+        self.stop_calls.append(device_id)
+        return True
+
+
+class FailingSpeakers(FakeSpeakers):
+    def get_now_playing_status(self, device_id: str):
+        raise OSError("speaker unavailable")
+
+
+class IncompleteNowPlayingSpeakers(FakeSpeakers):
+    def get_now_playing_and_volume(self, device_id: str, timeout: float):
+        now_playing = SimpleNamespace(
+            StationName="",
+            ContentItem=None,
+            PlayStatus="STOP_STATE",
+        )
+        return now_playing, self.get_volume(device_id)
+
+
+def make_client(monkeypatch, speakers: FakeSpeakers | None = None, datastore: FakeDatastore | None = None):
     app = FastAPI()
     fake_speakers = speakers or FakeSpeakers()
-    app.include_router(get_miniapp_router(cast(Any, FakeDatastore()), cast(Any, fake_speakers)))
+    app.include_router(get_miniapp_router(cast(Any, datastore or FakeDatastore()), cast(Any, fake_speakers)))
     return TestClient(app), fake_speakers
 
 
@@ -94,3 +140,104 @@ def test_dashboard_decodes_display_cookies(monkeypatch):
 
     assert response.status_code == 200
     assert "Účet ložnice" in response.text
+    assert f'data-account-id="{ACCOUNT_ID}"' in response.text
+    assert f'id="{DEVICE_ID}-info"' in response.text
+    assert "code.jquery.com" not in response.text
+    assert 'src="/static/js/miniapp_handler.js"' in response.text
+    assert 'id="sidebar-"' not in response.text
+
+
+def test_dashboard_disables_offline_device(monkeypatch):
+    client, _speakers = make_client(monkeypatch, FakeSpeakers(online=False))
+
+    response = client.get(
+        f"/miniapp/dashboard?selected_device_id={DEVICE_ID}",
+        headers={"Cookie": f"soundcork_account_id={ACCOUNT_ID}"},
+    )
+
+    assert response.status_code == 200
+    assert 'disabled aria-disabled="true"' in response.text
+
+
+def test_account_cookie_is_http_only(monkeypatch):
+    client, _speakers = make_client(monkeypatch)
+
+    response = client.post(
+        "/miniapp/login",
+        data={"account_id": ACCOUNT_ID},
+        follow_redirects=False,
+    )
+
+    account_cookie = next(
+        header for header in set_cookie_headers(response) if header.startswith("soundcork_account_id=")
+    )
+    assert "HttpOnly" in account_cookie
+
+
+def test_stop_url_omits_none_content_item(monkeypatch):
+    client, speakers = make_client(monkeypatch)
+
+    response = client.post(
+        f"/miniapp/stop?selected_device_id={DEVICE_ID}",
+        headers={"Cookie": f"soundcork_account_id={ACCOUNT_ID}"},
+        follow_redirects=False,
+    )
+
+    assert response.headers["location"] == f"/miniapp/dashboard?selected_device_id={DEVICE_ID}&stopped=true"
+    assert speakers.stop_calls == [DEVICE_ID]
+
+
+def test_dashboard_isolates_speaker_network_failure(monkeypatch):
+    client, _speakers = make_client(monkeypatch, FailingSpeakers())
+
+    response = client.get(
+        "/miniapp/dashboard",
+        headers={"Cookie": f"soundcork_account_id={ACCOUNT_ID}"},
+    )
+
+    assert response.status_code == 200
+    assert f'id="{DEVICE_ID}-info"' in response.text
+    assert "Error loading dashboard data" not in response.text
+
+
+def test_dashboard_isolates_incomplete_now_playing_response(monkeypatch):
+    client, _speakers = make_client(monkeypatch, IncompleteNowPlayingSpeakers())
+
+    response = client.get(
+        f"/miniapp/dashboard?selected_device_id={DEVICE_ID}",
+        headers={"Cookie": f"soundcork_account_id={ACCOUNT_ID}"},
+    )
+
+    assert f'id="{DEVICE_ID}-info"' in response.text
+    assert "[Unknown]" in response.text
+    assert "Error loading dashboard data" not in response.text
+
+
+def test_dashboard_url_encodes_selected_ids(monkeypatch):
+    client, _speakers = make_client(monkeypatch)
+
+    response = client.get(
+        "/miniapp/dashboard?selected_device_id=device%26%2B%20%23&selected_content_item_id=item%26%2B%20%23",
+        headers={"Cookie": f"soundcork_account_id={ACCOUNT_ID}"},
+    )
+
+    assert "selected_device_id=device%26%2B%20%23" in response.text
+    assert "selected_content_item_id=item%26%2B%20%23" in response.text
+
+
+def test_dashboard_keeps_presets_when_device_record_is_invalid(monkeypatch):
+    client, _speakers = make_client(monkeypatch, datastore=BrokenDeviceDatastore())
+
+    response = client.get(
+        "/miniapp/dashboard",
+        headers={"Cookie": f"soundcork_account_id={ACCOUNT_ID}"},
+    )
+
+    assert "Rádio Proglas" in response.text
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="Node.js is unavailable")
+def test_websocket_client_behavior():
+    # Codex: Run the dependency-free browser behavior suite through pytest/CI.
+    test_file = Path(__file__).with_name("test_soundtouch_websocket.mjs")
+    subprocess.run(["node", "--test", str(test_file)], check=True)

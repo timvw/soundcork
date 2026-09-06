@@ -6,9 +6,11 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Soundcork Dashboard</title>
     <link rel="stylesheet" href="/static/css/main.css">
+    <script type="module" src="/static/js/miniapp_handler.js"></script>
 </head>
 
-<body>
+<!-- Codex: Expose only the account identifier needed by the websocket loader. -->
+<body data-account-id="{{ account_id }}">
     <div class="left-sidebar-grid">
         <a href="#main" class="skip-link">Skip to main content</a>
 
@@ -24,7 +26,7 @@
                     {% if ns.selected_device_obj %}
                     {% if ns.selected_device_obj.play_state == "PLAY_STATE" %}
                     <form
-                        action="/miniapp/stop?selected_device_id={{ selected_device_id }}&amp;selected_content_item_id={{ selected_content_item_id }}"
+                        action="/miniapp/stop?selected_device_id={{ selected_device_id | urlencode }}&amp;selected_content_item_id={{ (selected_content_item_id or '') | urlencode }}"
                         method="post">
                         <button type="submit" class="control-button stop-button">
                             <span aria-hidden="true" class="icon">■</span> Stop
@@ -32,7 +34,7 @@
                     </form>
                     {% elif ns.selected_preset_obj %}
                     <form
-                        action="/miniapp/play?selected_device_id={{ selected_device_id }}&amp;selected_content_item_id={{ selected_content_item_id }}"
+                        action="/miniapp/play?selected_device_id={{ selected_device_id | urlencode }}&amp;selected_content_item_id={{ selected_content_item_id | urlencode }}"
                         method="post">
                         <button type="submit" class="control-button play-button">
                             <span aria-hidden="true" class="icon">▶</span> Play
@@ -64,7 +66,7 @@
                     {% for preset in presets %}
                     <li>
                         <form
-                            action="/miniapp/select-content-item{% if selected_device_id %}?selected_device_id={{ selected_device_id }}{% endif %}"
+                            action="/miniapp/select-content-item{% if selected_device_id %}?selected_device_id={{ selected_device_id | urlencode }}{% endif %}"
                             method="post" style="display:contents;">
                             <input type="hidden" name="content_item_id" value="{{ preset.id }}">
                             <input type="hidden" name="content_item_name" value="{{ preset.name }}">
@@ -91,20 +93,23 @@
                 {% if devices %}
                 <ul class="devices-grid">
                     {% for device in devices %}
-                    <li class="device-card {{device.online_status}}">
+                    <li id="form_{{device.device_id}}" class="device-card {{device.online_status}}">
                         <form
-                            action="/miniapp/select-device{% if selected_content_item_id %}?selected_content_item_id={{ selected_content_item_id }}{% endif %}"
+                            action="/miniapp/select-device{% if selected_content_item_id %}?selected_content_item_id={{ selected_content_item_id | urlencode }}{% endif %}"
                             method="post" style="display:contents;">
                             <input type="hidden" name="device_id" value="{{ device.device_id }}">
                             <input type="hidden" name="device_name" value="{{ device.name }}">
-                            <button type="submit" {% if device.status=='offline' %} disabled aria-disabled="true" {%
+                            <button type="submit" {% if device.online_status=='offline' %} disabled aria-disabled="true" {%
                                 endif %}>
                                 <img src="/static/images/devices/{{ device.image_file }}" alt="" class="device-image">
-                                <div class="device-info">
+                                <div id="{{device.device_id}}-info" class="device-info">
                                     <div class="device-name">{{ device.name }}</div>
                                     {% if device.now_playing and device.play_state == "PLAY_STATE" %}
-                                    <div class="device-now-playing">{{ device.now_playing }}</div>
-                                    <div class="device-now-playing">Volume: {{ device.now_playing_volume }}</div>
+                                    <div class="device-now-playing np-info">{{ device.now_playing }}</div>
+                                    <div class="device-now-playing volume">Volume: {{ device.now_playing_volume }}</div>
+                                    {% else %}
+                                    <div class="device-now-playing np-info"></div>
+                                    <div class="device-now-playing volume"></div>
                                     {% endif %}
                                 </div>
                             </button>
@@ -120,19 +125,16 @@
             </section>
         </main>
         <section class="left-sidebar">
-            <div class="device-info">
+            <div class="device-info"{% if ns.selected_device_obj %} id="sidebar-{{ns.selected_device_obj.device_id}}"{% endif %}>
                 {% if ns.selected_device_obj %}
                 Selected speaker: {{ ns.selected_device_obj.name }}
-                {% if ns.selected_device_obj.now_playing and ns.selected_device_obj.play_state == "PLAY_STATE" %}
                 <p>Now Playing on {{ ns.selected_device_obj.name }}:<br>
-                    {{ ns.selected_device_obj.now_playing }}</p>
-                {% if ns.selected_device_obj.now_playing_image %}
-                <img alt="" src="{{  ns.selected_device_obj.now_playing_image }}" width=100px;>
-                {% endif %}
+                    <span class="now_playing">{{ ns.selected_device_obj.now_playing }}</span></p>
+                <img alt="" src="{{ ns.selected_device_obj.now_playing_image }}" width="100" {% if not
+                    ns.selected_device_obj.now_playing_image %}hidden{% endif %}>
                 {# TODO: right now this is read-only #}
-                <p><input type="range" min="1" max="100" value={{ ns.selected_device_obj.now_playing_volume }}
+                <p><input type="range" min="1" max="100" value="{{ ns.selected_device_obj.now_playing_volume }}"
                         class="slider" id="volume"></p>
-                {% endif %}
                 {% else %}
                 No speaker selected.
                 {% endif %}
@@ -140,8 +142,8 @@
             <div class="content-item-info">
                 {% if ns.selected_preset_obj %}
                 Selected audio source: {{ ns.selected_preset_obj.name }}
-                {% if ns.selected_preset_obj.now_playing_image %}
-                <img alt="" src="{{  ns.selected_preset_obj.container_art }}" width=100px;>
+                {% if ns.selected_preset_obj.container_art %}
+                <img alt="" src="{{ ns.selected_preset_obj.container_art }}" width="100">
                 {% endif %}
                 {% else %}
                 No preset selected.

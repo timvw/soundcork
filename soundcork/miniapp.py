@@ -4,6 +4,7 @@ Endpoints for a miniapp UI.
 
 import asyncio
 import logging
+import os
 import urllib.parse
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
@@ -58,7 +59,8 @@ def get_device_image(product_code: str) -> str:
 
 
 def get_miniapp_router(datastore: DataStore, speakers: Speakers):
-    templates = Jinja2Templates(directory="templates")
+    # Codex: Resolve templates independently of the process working directory.
+    templates = Jinja2Templates(directory=os.path.join(os.path.dirname(__file__), "templates"))
 
     router = APIRouter(tags=["miniapp"])
 
@@ -132,14 +134,14 @@ def get_miniapp_router(datastore: DataStore, speakers: Speakers):
                 key="soundcork_account_id",
                 value=account_id,
                 max_age=86400 * 30,  # 30 days
-                httponly=True,
+                httponly=True,  # Codex: account ID is rendered into the dashboard.
                 samesite="strict",
             )
             response.set_cookie(
                 key="soundcork_account_label",
                 value=encode_cookie_value(account_label),
                 max_age=86400 * 30,
-                httponly=False,  # Allow JS to read for display
+                httponly=True,  # Codex: account label is rendered server-side.
                 samesite="strict",
             )
 
@@ -196,13 +198,18 @@ def get_miniapp_router(datastore: DataStore, speakers: Speakers):
 
             devices: list[dict[str, str]] = []
             presets: list["Preset"] = []
+            try:
+                # Codex: Presets remain available when one device record is invalid.
+                presets = datastore.get_presets(account_id)
+            except Exception as e:
+                logger.warning(f"Error getting presets for account {account_id}: {e}")
 
-            for device_id in my_combined_devices.keys():
+            now_playing = await asyncio.gather(*(_get_now_playing(device_id) for device_id in my_combined_devices))
+
+            for device_id, np in zip(my_combined_devices, now_playing, strict=True):
                 try:
                     if stopped and device_id == selected_device_id:
                         np = NowPlaying("", "", "", 0, 0, False)
-                    else:
-                        np = await _get_now_playing(device_id)
                     online = "offline"
                     cd = my_combined_devices[device_id]
                     device_info = datastore.get_device_info(account_id, device_id)
@@ -222,12 +229,6 @@ def get_miniapp_router(datastore: DataStore, speakers: Speakers):
                             "now_playing_is_muted": str(np.is_muted),
                         }
                     )
-
-                    if not presets:
-                        try:
-                            presets = datastore.get_presets(account_id)
-                        except Exception as e:
-                            logger.warning(f"Error getting presets for device {device_id}: {e}")
 
                 except Exception as e:
                     logger.error(f"Error getting device info for {device_id}: {e}")
@@ -271,30 +272,34 @@ def get_miniapp_router(datastore: DataStore, speakers: Speakers):
     async def _get_now_playing(device_id) -> NowPlaying:
         """Get now_playing info for a device"""
         loop = asyncio.get_event_loop()
+
+        def fetch_speaker_state():
+            # Codex: Keep both blocking speaker calls off the ASGI event loop.
+            return speakers.get_now_playing_and_volume(device_id, NOW_PLAYING_TIMEOUT)
+
         try:
-            np = await asyncio.wait_for(
-                loop.run_in_executor(
-                    None,
-                    lambda: speakers.get_now_playing_status(device_id=device_id),
-                ),
+            np, volume = await asyncio.wait_for(
+                loop.run_in_executor(None, fetch_speaker_state),
                 timeout=NOW_PLAYING_TIMEOUT,
             )
+            if np:
+                content_name = np.ContentItem.Name if np.ContentItem else ""
+                return NowPlaying(
+                    f"{np.StationName or content_name}",
+                    np.ContainerArtUrl or "",
+                    np.PlayStatus,
+                    volume.Actual if volume else 0,
+                    volume.Target if volume else 0,
+                    volume.IsMuted if volume else False,
+                )
+            return NowPlaying("", "", "", 0, 0, False)
         except asyncio.TimeoutError:
             logger.warning(f"Timeout getting now playing status for {device_id}")
             return NowPlaying("[Unknown]", "", "", 0, 0, False)
-
-        if np:
-            volume = speakers.get_volume(device_id)
-            return NowPlaying(
-                f"{np.StationName or np.ContentItem.Name}",
-                np.ContainerArtUrl or "",
-                np.PlayStatus,
-                volume.Actual if volume else 0,
-                volume.Target if volume else 0,
-                volume.IsMuted if volume else False,
-            )
-        else:
-            return NowPlaying("", "", "", 0, 0, False)
+        except Exception as e:
+            # Codex: A failed speaker must not hide healthy devices or presets.
+            logger.warning(f"Error getting now playing status for {device_id}: {e}")
+            return NowPlaying("[Unknown]", "", "", 0, 0, False)
 
     @router.post("/miniapp/select-content-item")
     async def select_content_item(request: Request, selected_device_id: str | None = Query(None)):
