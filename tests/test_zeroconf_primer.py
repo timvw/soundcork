@@ -52,6 +52,7 @@ def test_stop_during_periodic_tick_does_not_rearm_timer(monkeypatch, tmp_path):
 
 def test_power_on_discovers_speakers_when_registry_is_empty(monkeypatch, tmp_path):
     primer, _, _ = _primer(tmp_path)
+    primer._stopped = False
     speaker = SimpleNamespace(ip_address="192.168.1.42")
 
     def seed():
@@ -148,6 +149,39 @@ def test_stopped_primer_skips_pending_startup_prime(monkeypatch, tmp_path):
     prime.assert_not_called()
 
 
+def test_startup_prime_rechecks_stop_between_speakers(monkeypatch, tmp_path):
+    primer, _, _ = _primer(tmp_path)
+    first = primer_module.TrackedSpeaker("1234567", "AABBCCDDEEFF", "192.168.1.42")
+    second = primer_module.TrackedSpeaker("1234567", "001122334455", "192.168.1.43")
+    primer._speakers = {first.device_id: first, second.device_id: second}
+    primer._stopped = False
+
+    def stop_after_first(speaker):
+        primer._stopped = True
+
+    prime = MagicMock(side_effect=stop_after_first)
+    monkeypatch.setattr(primer, "_prime_if_needed", prime)
+
+    primer._prime_seeded_speakers()
+
+    prime.assert_called_once_with(first)
+
+
+def test_stopped_primer_aborts_power_on_retries(monkeypatch, tmp_path):
+    primer, _, _ = _primer(tmp_path)
+    speaker = primer_module.TrackedSpeaker("1234567", "AABBCCDDEEFF", "192.168.1.42")
+    primer._speakers[speaker.device_id] = speaker
+    prime = MagicMock(return_value=True)
+    sleep = MagicMock()
+    monkeypatch.setattr(primer, "_prime_if_needed", prime)
+    monkeypatch.setattr(primer_module.time, "sleep", sleep)
+
+    primer._power_on_prime()
+
+    sleep.assert_not_called()
+    prime.assert_not_called()
+
+
 def test_device_identity_read_is_size_limited(monkeypatch):
     class FakeResponse:
         def __enter__(self):
@@ -165,6 +199,68 @@ def test_device_identity_read_is_size_limited(monkeypatch):
     monkeypatch.setattr(marge_module.urllib.request, "build_opener", MagicMock(return_value=opener))
 
     assert marge_module._device_id_at_ip("192.168.1.42") == "AABBCCDDEEFF"
+
+
+def test_device_identity_rejects_oversize_response(monkeypatch):
+    class StaticResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def read(self, size):
+            return b"x" * 65_537
+
+    response = StaticResponse()
+    opener = MagicMock()
+    opener.open.return_value = response
+    monkeypatch.setattr(marge_module.urllib.request, "build_opener", MagicMock(return_value=opener))
+
+    assert marge_module._device_id_at_ip("192.168.1.42") is None
+
+
+def test_device_identity_read_has_wall_clock_deadline(monkeypatch):
+    class SlowResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def read(self, size):
+            return b'<info deviceID="AABBCCDDEEFF"/>'
+
+        def read1(self, size):
+            return b"<info "
+
+    opener = MagicMock()
+    opener.open.return_value = SlowResponse()
+    monkeypatch.setattr(marge_module.urllib.request, "build_opener", MagicMock(return_value=opener))
+    monkeypatch.setattr(marge_module.time, "monotonic", MagicMock(side_effect=[0.0, 0.6, 1.1]))
+
+    assert marge_module._device_id_at_ip("192.168.1.42") is None
+
+
+def test_device_identity_rejects_dtd_entities(monkeypatch):
+    payload = b'<!DOCTYPE info [<!ENTITY device "AABBCCDDEEFF">]><info deviceID="&device;"/>'
+
+    class StaticResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def read(self, size):
+            return payload
+
+    response = StaticResponse()
+    opener = MagicMock()
+    opener.open.return_value = response
+    monkeypatch.setattr(marge_module.urllib.request, "build_opener", MagicMock(return_value=opener))
+
+    assert marge_module._device_id_at_ip("192.168.1.42") is None
 
 
 def test_periodic_check_reprimes_stale_active_speaker(monkeypatch, tmp_path):

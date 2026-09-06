@@ -1,5 +1,6 @@
 # Codex: Notify the primer when an observed speaker powers on.
 import logging
+import time
 import urllib.request
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
@@ -34,6 +35,7 @@ logger = logging.getLogger(__name__)
 
 settings = Settings()
 MAX_SPEAKER_INFO_BYTES = 64 * 1024
+SPEAKER_INFO_TIMEOUT_SECONDS = 1.0
 
 
 class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
@@ -49,16 +51,47 @@ def _device_id_at_ip(ip_address: str) -> str | None:
         _NoRedirectHandler,
     )
     try:
-        with opener.open(f"http://{ip_address}:8090/info", timeout=1) as response:
-            payload = response.read(MAX_SPEAKER_INFO_BYTES + 1)
+        with opener.open(
+            f"http://{ip_address}:8090/info",
+            timeout=SPEAKER_INFO_TIMEOUT_SECONDS,
+        ) as response:
+            payload = _read_speaker_info(response)
             if len(payload) > MAX_SPEAKER_INFO_BYTES:
                 logger.warning("Speaker identity response too large at %s", ip_address)
+                return None
+            if b"<!DOCTYPE" in payload.upper() or b"<!ENTITY" in payload.upper():
+                logger.warning("Rejected speaker identity response with DTD at %s", ip_address)
                 return None
             info = ET.fromstring(payload)
         return info.attrib.get("deviceID")
     except Exception:
         logger.warning("Could not verify speaker identity at %s", ip_address)
         return None
+
+
+def _read_speaker_info(response) -> bytes:
+    """Read a small response against one wall-clock deadline."""
+    read_chunk = getattr(response, "read1", None)
+    if not callable(read_chunk):
+        return response.read(MAX_SPEAKER_INFO_BYTES + 1)
+
+    deadline = time.monotonic() + SPEAKER_INFO_TIMEOUT_SECONDS
+    payload = bytearray()
+    while len(payload) <= MAX_SPEAKER_INFO_BYTES:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("speaker identity response deadline exceeded")
+
+        # Codex: read1 performs one underlying receive; shrinking the socket
+        # timeout prevents a slow-drip peer from resetting a per-read timeout.
+        sock = getattr(getattr(getattr(response, "fp", None), "raw", None), "_sock", None)
+        if sock is not None:
+            sock.settimeout(remaining)
+        chunk = read_chunk(min(8192, MAX_SPEAKER_INFO_BYTES + 1 - len(payload)))
+        if not chunk:
+            break
+        payload.extend(chunk)
+    return bytes(payload)
 
 
 def source_providers() -> list[SourceProvider]:

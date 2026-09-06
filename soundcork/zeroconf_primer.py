@@ -367,6 +367,8 @@ class ZeroConfPrimer:
     def _power_on_prime(self):
         """Prime speakers after boot with retry/backoff."""
         with self._lock:
+            if self._stopped:
+                return
             speakers = list(self._speakers.values())
 
         if not speakers:
@@ -378,6 +380,9 @@ class ZeroConfPrimer:
                 return
 
         for delay in BOOT_RETRY_DELAYS:
+            with self._lock:
+                if self._stopped:
+                    return
             logger.info(
                 "Speaker booted — waiting %ds before priming %d speaker(s)...",
                 delay,
@@ -387,6 +392,9 @@ class ZeroConfPrimer:
 
             all_ok = True
             for speaker in speakers:
+                with self._lock:
+                    if self._stopped:
+                        return
                 if not speaker.ip_address:
                     continue
                 if not self._prime_if_needed(speaker):
