@@ -103,6 +103,70 @@ def test_seed_uses_datastore_account_listing(tmp_path):
     datastore.list_devices.assert_called_once_with("1234567")
 
 
+def test_start_periodic_primes_seeded_speakers_immediately(monkeypatch, tmp_path):
+    primer, _, _ = _primer(tmp_path)
+    speaker = primer_module.TrackedSpeaker("1234567", "AABBCCDDEEFF", "192.168.1.42")
+    monkeypatch.setattr(
+        primer,
+        "_seed_from_datastore",
+        MagicMock(side_effect=lambda: primer._speakers.update({speaker.device_id: speaker})),
+    )
+    threads = []
+
+    class FakeThread:
+        def __init__(self, **kwargs):
+            threads.append(kwargs)
+
+        def start(self):
+            pass
+
+    class FakeTimer:
+        def __init__(self, interval, function):
+            self.daemon = False
+
+        def start(self):
+            pass
+
+    monkeypatch.setattr(primer_module.threading, "Thread", FakeThread)
+    monkeypatch.setattr(primer_module.threading, "Timer", FakeTimer)
+
+    primer.start_periodic()
+
+    assert len(threads) == 1
+    assert threads[0]["target"] == primer._prime_seeded_speakers
+
+
+def test_stopped_primer_skips_pending_startup_prime(monkeypatch, tmp_path):
+    primer, _, _ = _primer(tmp_path)
+    speaker = primer_module.TrackedSpeaker("1234567", "AABBCCDDEEFF", "192.168.1.42")
+    primer._speakers[speaker.device_id] = speaker
+    prime = MagicMock()
+    monkeypatch.setattr(primer, "_prime_if_needed", prime)
+
+    primer._prime_seeded_speakers()
+
+    prime.assert_not_called()
+
+
+def test_device_identity_read_is_size_limited(monkeypatch):
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def read(self, size):
+            assert size == 65_537
+            return b'<info deviceID="AABBCCDDEEFF"/>'
+
+    opener = MagicMock()
+    opener.open.return_value = FakeResponse()
+    monkeypatch.setattr(marge_module.urllib.request, "build_opener", MagicMock(return_value=opener))
+
+    assert marge_module._device_id_at_ip("192.168.1.42") == "AABBCCDDEEFF"
+
+
 def test_periodic_check_reprimes_stale_active_speaker(monkeypatch, tmp_path):
     primer, _, _ = _primer(tmp_path)
     speaker = primer_module.TrackedSpeaker(

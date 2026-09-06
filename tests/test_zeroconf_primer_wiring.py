@@ -110,6 +110,31 @@ def test_power_on_notifies_primer(monkeypatch):
     primer.on_power_on.assert_called_once_with()
 
 
+def test_power_on_offloads_device_verification(monkeypatch):
+    primer = MagicMock()
+    update = MagicMock(return_value="1234567")
+
+    async def run_offloaded(function, *args):
+        return function(*args)
+
+    offload = AsyncMock(side_effect=run_offloaded)
+    monkeypatch.setattr(main, "zeroconf_primer", primer)
+    monkeypatch.setattr(main.settings, "zeroconf_primer_enabled", True)
+    monkeypatch.setattr(main, "update_device_poweron", update)
+    monkeypatch.setattr(main, "run_in_threadpool", offload)
+    request = SimpleNamespace(
+        headers={},
+        client=SimpleNamespace(host="192.168.1.42"),
+        body=AsyncMock(return_value=b"<info/>"),
+    )
+
+    result = asyncio.run(main.power_on(request, main.Response()))
+
+    assert result.status_code == 200
+    offload.assert_awaited_once()
+    assert offload.await_args.args[0] is update
+
+
 def test_power_on_leaves_disabled_primer_stopped(monkeypatch):
     primer = MagicMock()
     monkeypatch.setattr(main, "zeroconf_primer", primer)

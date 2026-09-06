@@ -393,7 +393,12 @@ def read_root():
 async def power_on(request: Request, response: Response) -> Response:
     logger.info("power_on from %s", request.headers.get("x-forwarded-for", "unknown"))
     xml = await request.body()
-    account = update_device_poweron(datastore, xml, _request_client_ip(request) or None)
+    account = await run_in_threadpool(
+        update_device_poweron,
+        datastore,
+        xml,
+        _request_client_ip(request) or None,
+    )
     if account:
         if settings.zeroconf_primer_enabled:
             zeroconf_primer.on_power_on()

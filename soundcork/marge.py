@@ -33,6 +33,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 settings = Settings()
+MAX_SPEAKER_INFO_BYTES = 64 * 1024
 
 
 class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
@@ -49,7 +50,11 @@ def _device_id_at_ip(ip_address: str) -> str | None:
     )
     try:
         with opener.open(f"http://{ip_address}:8090/info", timeout=1) as response:
-            info = ET.fromstring(response.read())
+            payload = response.read(MAX_SPEAKER_INFO_BYTES + 1)
+            if len(payload) > MAX_SPEAKER_INFO_BYTES:
+                logger.warning("Speaker identity response too large at %s", ip_address)
+                return None
+            info = ET.fromstring(payload)
         return info.attrib.get("deviceID")
     except Exception:
         logger.warning("Could not verify speaker identity at %s", ip_address)

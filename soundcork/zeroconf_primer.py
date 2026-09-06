@@ -160,6 +160,12 @@ class ZeroConfPrimer:
 
         # Seed the registry from the datastore on startup
         self._seed_from_datastore()
+        with self._lock:
+            has_speakers = bool(self._speakers)
+        if has_speakers:
+            # Codex: Prime restored speakers now instead of waiting for the first
+            # 45-minute periodic interval or a later marge request.
+            threading.Thread(target=self._prime_seeded_speakers, daemon=True).start()
 
         self._schedule_next()
         logger.info(
@@ -233,6 +239,18 @@ class ZeroConfPrimer:
         except Exception:
             logger.debug("Could not resolve IP for %s/%s", account_id, device_id)
             return None
+
+    def _prime_seeded_speakers(self):
+        """Prime datastore-discovered speakers once after server startup."""
+        with self._lock:
+            if self._stopped:
+                return
+            speakers = list(self._speakers.values())
+        for speaker in speakers:
+            with self._lock:
+                if self._stopped:
+                    return
+            self._prime_if_needed(speaker)
 
     def _get_token(self) -> tuple[str, str] | None:
         """Get a valid Spotify access token and user ID.
