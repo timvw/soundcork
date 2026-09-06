@@ -421,9 +421,14 @@ class ZeroConfPrimer:
         try:
             logger.info("Periodic Spotify primer check running...")
             with self._lock:
+                if self._stopped:
+                    return
                 speakers = list(self._speakers.values())
 
             for speaker in speakers:
+                with self._lock:
+                    if self._stopped:
+                        return
                 self._prime_if_needed(speaker)
 
             # Remove speakers that have failed too many times in a row.

@@ -182,6 +182,18 @@ def test_stopped_primer_aborts_power_on_retries(monkeypatch, tmp_path):
     prime.assert_not_called()
 
 
+def test_stopped_primer_aborts_already_fired_periodic_tick(monkeypatch, tmp_path):
+    primer, _, _ = _primer(tmp_path)
+    speaker = primer_module.TrackedSpeaker("1234567", "AABBCCDDEEFF", "192.168.1.42")
+    primer._speakers[speaker.device_id] = speaker
+    prime = MagicMock()
+    monkeypatch.setattr(primer, "_prime_if_needed", prime)
+
+    primer._periodic_tick()
+
+    prime.assert_not_called()
+
+
 def test_device_identity_read_is_size_limited(monkeypatch):
     class FakeResponse:
         def __enter__(self):
@@ -240,6 +252,53 @@ def test_device_identity_read_has_wall_clock_deadline(monkeypatch):
     monkeypatch.setattr(marge_module.time, "monotonic", MagicMock(side_effect=[0.0, 0.6, 1.1]))
 
     assert marge_module._device_id_at_ip("192.168.1.42") is None
+
+
+def test_device_identity_chunked_read_enforces_size_cap(monkeypatch):
+    class OversizeChunkedResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def read1(self, size):
+            return b"x" * size
+
+    response = OversizeChunkedResponse()
+    opener = MagicMock()
+    opener.open.return_value = response
+    monkeypatch.setattr(marge_module.urllib.request, "build_opener", MagicMock(return_value=opener))
+    monkeypatch.setattr(marge_module.time, "monotonic", MagicMock(return_value=0.0))
+
+    assert marge_module._device_id_at_ip("192.168.1.42") is None
+
+
+def test_device_identity_chunked_read_shrinks_socket_timeout(monkeypatch):
+    sock = MagicMock()
+
+    class ChunkedResponse:
+        fp = SimpleNamespace(raw=SimpleNamespace(_sock=sock))
+
+        def __init__(self):
+            self.chunks = [b'<info deviceID="AABBCCDDEEFF"/>', b""]
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def read1(self, size):
+            return self.chunks.pop(0)
+
+    opener = MagicMock()
+    opener.open.return_value = ChunkedResponse()
+    monkeypatch.setattr(marge_module.urllib.request, "build_opener", MagicMock(return_value=opener))
+    monkeypatch.setattr(marge_module.time, "monotonic", MagicMock(side_effect=[0.0, 0.2, 0.3]))
+
+    assert marge_module._device_id_at_ip("192.168.1.42") == "AABBCCDDEEFF"
+    assert [call.args[0] for call in sock.settimeout.call_args_list] == [0.8, 0.7]
 
 
 def test_device_identity_rejects_dtd_entities(monkeypatch):
