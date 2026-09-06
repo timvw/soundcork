@@ -14,6 +14,7 @@ from fastapi import Depends, FastAPI, HTTPException, Path, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi_etag import Etag
+from starlette.concurrency import run_in_threadpool
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.responses import Response as StarletteResponse
 
@@ -116,13 +117,15 @@ async def lifespan(app: FastAPI):
 
     # Initialise speaker allowlist at startup
     get_speaker_allowlist()
+    primer_started = False
     if settings.zeroconf_primer_enabled:
         zeroconf_primer.start_periodic()
+        primer_started = True
     logger.info("done starting up server")
     try:
         yield
     finally:
-        if settings.zeroconf_primer_enabled:
+        if primer_started:
             zeroconf_primer.stop_periodic()
         logger.debug("closing server")
 
@@ -181,7 +184,9 @@ async def register_speakers_middleware(request: Request, call_next):
         if path.startswith("/marge/"):
             match = re.search(r"/account/([^/]+)/device/([^/]+)(?:/|$)", path)
             if match:
-                zeroconf_primer.register_speaker(match.group(1), match.group(2))
+                account, device = match.groups()
+                if re.fullmatch(ACCOUNT_RE, account) and re.fullmatch(DEVICE_RE, device):
+                    await run_in_threadpool(zeroconf_primer.register_speaker, account, device)
 
     return response
 
@@ -388,8 +393,7 @@ async def power_on(request: Request, response: Response) -> Response:
     account = update_device_poweron(datastore, xml)
     if account:
         if settings.zeroconf_primer_enabled:
-            source_ip = request.headers.get("x-forwarded-for", "").split(",")[0].strip() or None
-            zeroconf_primer.on_power_on(source_ip)
+            zeroconf_primer.on_power_on()
         response.status_code = HTTPStatus.OK
         return response
     else:

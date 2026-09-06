@@ -44,6 +44,7 @@ def test_lifespan_leaves_disabled_primer_stopped(monkeypatch):
 def test_marge_device_request_registers_speaker_after_success(monkeypatch):
     primer = MagicMock()
     monkeypatch.setattr(main, "zeroconf_primer", primer)
+    monkeypatch.setattr(main.settings, "zeroconf_primer_enabled", True)
     request = SimpleNamespace(url=SimpleNamespace(path="/marge/streaming/account/1234567/device/AABBCCDDEEFF/presets"))
     call_next = AsyncMock(return_value=SimpleNamespace(status_code=200))
 
@@ -56,6 +57,7 @@ def test_marge_device_request_registers_speaker_after_success(monkeypatch):
 def test_marge_device_request_does_not_register_after_failure(monkeypatch):
     primer = MagicMock()
     monkeypatch.setattr(main, "zeroconf_primer", primer)
+    monkeypatch.setattr(main.settings, "zeroconf_primer_enabled", True)
     request = SimpleNamespace(url=SimpleNamespace(path="/marge/streaming/account/1234567/device/AABBCCDDEEFF/presets"))
     call_next = AsyncMock(return_value=SimpleNamespace(status_code=404))
 
@@ -64,9 +66,34 @@ def test_marge_device_request_does_not_register_after_failure(monkeypatch):
     primer.register_speaker.assert_not_called()
 
 
-def test_power_on_notifies_primer_with_speaker_source_ip(monkeypatch):
+def test_marge_device_request_does_not_register_when_disabled(monkeypatch):
     primer = MagicMock()
     monkeypatch.setattr(main, "zeroconf_primer", primer)
+    monkeypatch.setattr(main.settings, "zeroconf_primer_enabled", False)
+    request = SimpleNamespace(url=SimpleNamespace(path="/marge/streaming/account/1234567/device/AABBCCDDEEFF"))
+    call_next = AsyncMock(return_value=SimpleNamespace(status_code=200))
+
+    asyncio.run(main.register_speakers_middleware(request, call_next))
+
+    primer.register_speaker.assert_not_called()
+
+
+def test_non_marge_request_does_not_register_speaker(monkeypatch):
+    primer = MagicMock()
+    monkeypatch.setattr(main, "zeroconf_primer", primer)
+    monkeypatch.setattr(main.settings, "zeroconf_primer_enabled", True)
+    request = SimpleNamespace(url=SimpleNamespace(path="/api/account/1234567/device/AABBCCDDEEFF"))
+    call_next = AsyncMock(return_value=SimpleNamespace(status_code=200))
+
+    asyncio.run(main.register_speakers_middleware(request, call_next))
+
+    primer.register_speaker.assert_not_called()
+
+
+def test_power_on_notifies_primer(monkeypatch):
+    primer = MagicMock()
+    monkeypatch.setattr(main, "zeroconf_primer", primer)
+    monkeypatch.setattr(main.settings, "zeroconf_primer_enabled", True)
     monkeypatch.setattr(main, "update_device_poweron", MagicMock(return_value="1234567"))
     request = SimpleNamespace(
         headers={"x-forwarded-for": "192.168.1.42, 10.0.0.1"},
@@ -77,4 +104,17 @@ def test_power_on_notifies_primer_with_speaker_source_ip(monkeypatch):
     result = asyncio.run(main.power_on(request, response))
 
     assert result.status_code == 200
-    primer.on_power_on.assert_called_once_with("192.168.1.42")
+    primer.on_power_on.assert_called_once_with()
+
+
+def test_power_on_leaves_disabled_primer_stopped(monkeypatch):
+    primer = MagicMock()
+    monkeypatch.setattr(main, "zeroconf_primer", primer)
+    monkeypatch.setattr(main.settings, "zeroconf_primer_enabled", False)
+    monkeypatch.setattr(main, "update_device_poweron", MagicMock(return_value="1234567"))
+    request = SimpleNamespace(headers={}, body=AsyncMock(return_value=b"<info/>"))
+
+    result = asyncio.run(main.power_on(request, main.Response()))
+
+    assert result.status_code == 200
+    primer.on_power_on.assert_not_called()
