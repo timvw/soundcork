@@ -1,30 +1,46 @@
+// Codex: Keep live updates dependency-free and compatible with LAN HTTP browsers.
 import { SoundTouchHandler, loadSpeakers } from "./soundtouch_websocket.js";
 
 export class MiniAppHandler extends SoundTouchHandler {
     connected(speakerId) {
-        console.log("connected!")
+        console.log("connected to " + speakerId);
     }
+
     updateNowPlaying(speakerId, track, artist, album, imageUrl, status) {
-        $("#" + speakerId + "-info").find("div.np-info").text(track + " - " + artist)
-        const sidebarDiv = $("#sidebar-" + speakerId)
-        if (sidebarDiv.length > 0) {
-            sidebarDiv.find("span.now_playing").text(track)
-            sidebarDiv.find("img").attr("src", imageUrl)
+        const info = document.querySelector("#" + CSS.escape(speakerId + "-info") + " .np-info");
+        if (info) {
+            info.textContent = track + " - " + artist;
+        }
+
+        const sidebar = document.getElementById("sidebar-" + speakerId);
+        if (sidebar) {
+            const nowPlaying = sidebar.querySelector("span.now_playing");
+            const image = sidebar.querySelector("img");
+            if (nowPlaying) {
+                nowPlaying.textContent = track;
+            }
+            if (image) {
+                image.src = imageUrl;
+                image.hidden = !imageUrl;
+            }
         }
     }
+
     updateVolume(speakerId, actualVolume, targetVolume) {
-        $("#" + speakerId + "-info").find("div.volume").text("Volume: " + actualVolume)
-        const sidebarDiv = $("#sidebar-" + speakerId)
-        if (sidebarDiv.length > 0) {
-            console.log("in sidebar")
-            sidebarDiv.find("input.slider")[0].value = actualVolume
+        const volume = document.querySelector("#" + CSS.escape(speakerId + "-info") + " .volume");
+        if (volume) {
+            volume.textContent = "Volume: " + actualVolume;
+        }
+
+        const sidebar = document.getElementById("sidebar-" + speakerId);
+        const slider = sidebar ? sidebar.querySelector("input.slider") : null;
+        if (slider) {
+            slider.value = actualVolume;
         }
     }
 }
 
-const accountIdCookie = await window.cookieStore.get("soundcork_account_id")
-const accountId = accountIdCookie.value
-
-const handler = new MiniAppHandler()
-loadSpeakers(accountId, handler)
-
+const accountId = document.body.dataset.accountId;
+if (accountId) {
+    loadSpeakers(accountId, new MiniAppHandler());
+}

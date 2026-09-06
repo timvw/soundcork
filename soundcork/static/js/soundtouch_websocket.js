@@ -1,3 +1,11 @@
+// Codex: Isolate failures per speaker and reconnect transient websocket drops.
+const RECONNECT_DELAY_MS = 5000;
+let pageClosing = false;
+
+window.addEventListener("beforeunload", () => {
+    pageClosing = true;
+}, { once: true });
+
 export class SoundTouchHandler {
     connected(speakerId) {
     }
@@ -8,74 +16,108 @@ export class SoundTouchHandler {
 }
 
 export async function loadSpeakers(accountId, handler) {
-    $.ajax("/marge/streaming/account/" + accountId + "/devices")
-    .done(function(xml) {
-        const devices = xml.getElementsByTagName("device")
-        for (let device of devices) {
-            const deviceId = device.getAttribute("deviceid")
-            const ipAddr = device.getElementsByTagName("ipaddress")[0].innerHTML
-            const name = device.getElementsByTagName("name")[0].innerHTML
-            connectWebsocket(deviceId, ipAddr, name, handler)
+    try {
+        const response = await fetch("/marge/streaming/account/" + encodeURIComponent(accountId) + "/devices", {
+            credentials: "same-origin",
+        });
+        if (!response.ok) {
+            throw new Error("speaker request failed: " + response.status);
+        }
+        const xml = new DOMParser().parseFromString(await response.text(), "application/xml");
+        if (xml.querySelector("parsererror")) {
+            throw new Error("speaker response was not valid XML");
         }
 
-    })
+        for (const device of xml.getElementsByTagName("device")) {
+            const deviceId = device.getAttribute("deviceid");
+            const ipAddr = device.getElementsByTagName("ipaddress")[0]?.textContent?.trim();
+            const name = device.getElementsByTagName("name")[0]?.textContent || "";
+            if (!deviceId || !ipAddr) {
+                console.warn("Skipping speaker without device ID or IP address", name);
+                continue;
+            }
+            connectWebsocket(deviceId, ipAddr, name, handler);
+        }
+    } catch (error) {
+        console.error("Could not load speakers", error);
+    }
 }
 
 export function connectWebsocket(speakerId, ipAddr, name, handler) {
-    const websocket = new WebSocket("ws://" + ipAddr + ":8080", "gabbo");
+    if (!ipAddr || pageClosing) {
+        return null;
+    }
+
+    let websocket;
+    try {
+        websocket = new WebSocket("ws://" + ipAddr + ":8080", "gabbo");
+    } catch (error) {
+        console.error("Could not connect websocket for " + name, error);
+        scheduleReconnect(speakerId, ipAddr, name, handler);
+        return null;
+    }
+
     websocket.addEventListener("open", () => {
-        console.log("websocket connected to " + ipAddr);
-        handler.connected(speakerId)
+        handler.connected(speakerId);
     });
-    websocket.addEventListener("message", (e) => {
-        const xmlDoc = $.parseXML(e.data);
-        const updates = xmlDoc.getElementsByTagName("updates")
-        if (updates.length > 0) {
-            if (updates[0].getAttribute("deviceID") == speakerId) {
-                const nowPlaying = updates[0].getElementsByTagName("nowPlaying")
-                if (nowPlaying.length > 0) {
-                    parseNowPlayingMessage(nowPlaying[0], speakerId, handler)
-                    return;
-                }
-                const volume = updates[0].getElementsByTagName("volumeUpdated")
-                if (volume.length > 0) {
-                    parseVolumeMessage(volume[0], speakerId, handler)
-                }
+    websocket.addEventListener("message", (event) => {
+        try {
+            const xmlDoc = new DOMParser().parseFromString(event.data, "application/xml");
+            if (xmlDoc.querySelector("parsererror")) {
+                throw new Error("invalid websocket XML");
             }
+            const updates = xmlDoc.getElementsByTagName("updates")[0];
+            if (!updates || updates.getAttribute("deviceID") !== speakerId) {
+                return;
+            }
+
+            const nowPlaying = updates.getElementsByTagName("nowPlaying")[0];
+            if (nowPlaying) {
+                parseNowPlayingMessage(nowPlaying, speakerId, handler);
+                return;
+            }
+            const volume = updates.getElementsByTagName("volumeUpdated")[0];
+            if (volume) {
+                parseVolumeMessage(volume, speakerId, handler);
+            }
+        } catch (error) {
+            console.warn("Ignoring malformed websocket message from " + name, error);
         }
-        // not yet handled: zones
     });
+    websocket.addEventListener("error", () => {
+        websocket.close();
+    });
+    websocket.addEventListener("close", () => {
+        scheduleReconnect(speakerId, ipAddr, name, handler);
+    });
+    return websocket;
+}
+
+function scheduleReconnect(speakerId, ipAddr, name, handler) {
+    if (!pageClosing) {
+        setTimeout(() => connectWebsocket(speakerId, ipAddr, name, handler), RECONNECT_DELAY_MS);
+    }
+}
+
+function elementText(parent, tagName) {
+    return parent.getElementsByTagName(tagName)[0]?.textContent || "";
 }
 
 function parseNowPlayingMessage(nowPlaying, speakerId, handler) {
-
-    const trackElems = nowPlaying.getElementsByTagName("track")
-    const track = trackElems.length > 0 ? trackElems[0].innerHTML : ""
-
-    const artistElems = nowPlaying.getElementsByTagName("artist")
-    const artist = artistElems.length > 0 ? artistElems[0].innerHTML : ""
-
-
-    const albumElems = nowPlaying.getElementsByTagName("album")
-    const album = albumElems.length > 0 ?  albumElems[0].innerHTML : ""
-
-    const statusElems = nowPlaying.getElementsByTagName("playStatus")
-    const status = statusElems.length > 0 ? statusElems[0].innerHTML : ""
-
-    const imageElems = nowPlaying.getElementsByTagName("art")
-    const image =  imageElems.length > 0 ? imageElems[0].innerHTML : ""
-    const imageDecoded = new DOMParser().parseFromString(image, "text/html").documentElement.textContent;
-
-    handler.updateNowPlaying(speakerId, track, artist, album, imageDecoded, status)
-
+    handler.updateNowPlaying(
+        speakerId,
+        elementText(nowPlaying, "track"),
+        elementText(nowPlaying, "artist"),
+        elementText(nowPlaying, "album"),
+        elementText(nowPlaying, "art"),
+        elementText(nowPlaying, "playStatus"),
+    );
 }
 
 function parseVolumeMessage(volume, speakerId, handler) {
-    const targetElem = volume.getElementsByTagName("targetvolume")
-    const targetVolume = targetElem.length > 0 ? targetElem[0].innerHTML : ""
-
-    const actualElem = volume.getElementsByTagName("actualvolume")
-    const actualVolume = actualElem.length > 0 ? actualElem[0].innerHTML : ""
-
-    handler.updateVolume(speakerId, actualVolume, targetVolume)
+    handler.updateVolume(
+        speakerId,
+        elementText(volume, "actualvolume"),
+        elementText(volume, "targetvolume"),
+    );
 }
