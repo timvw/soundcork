@@ -153,6 +153,14 @@ class TestBoseProtocolIPRestriction:
         )
         assert resp.status_code == 403
 
+    def test_xff_invalid_rightmost_entry_fails_closed(self, client):
+        """An invalid value appended by a trusted proxy must not expose client XFF."""
+        resp = client.get(
+            "/marge/streaming/sourceproviders",
+            headers={"X-Forwarded-For": "192.168.1.143, unknown"},
+        )
+        assert resp.status_code == 403
+
     def test_cf_connecting_ip_ignored(self, client):
         """CF-Connecting-IP should not override XFF-derived client identity."""
         resp = client.get(
