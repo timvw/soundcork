@@ -1,4 +1,5 @@
 import logging
+import urllib.request
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from http import HTTPStatus
@@ -31,6 +32,27 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 settings = Settings()
+
+
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def _device_id_at_ip(ip_address: str) -> str | None:
+    """Read the hardware ID from a speaker without using proxies or redirects."""
+    opener = urllib.request.build_opener(
+        urllib.request.ProxyHandler({}),
+        urllib.request.HTTPHandler,
+        _NoRedirectHandler,
+    )
+    try:
+        with opener.open(f"http://{ip_address}:8090/info", timeout=1) as response:
+            info = ET.fromstring(response.read())
+        return info.attrib.get("deviceID")
+    except Exception:
+        logger.warning("Could not verify speaker identity at %s", ip_address)
+        return None
 
 
 def source_providers() -> list[SourceProvider]:
@@ -547,8 +569,15 @@ def update_device_poweron(
         # The XML body is unauthenticated. Use the network-observed source so a
         # forged power_on payload cannot redirect Spotify tokens to an attacker.
         if observed_ip and current_device.ip_address != observed_ip:
-            current_device.ip_address = observed_ip
-            datastore.save_device_info(current_device, account_id)
+            if _device_id_at_ip(observed_ip) == device.device_id:
+                current_device.ip_address = observed_ip
+                datastore.save_device_info(current_device, account_id)
+            else:
+                logger.warning(
+                    "Ignoring unverified IP change for device %s: %s",
+                    device.device_id,
+                    observed_ip,
+                )
     datastore.save_poweron(device.device_id, poweron_xml.decode())
     return account_id
 

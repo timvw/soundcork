@@ -71,6 +71,7 @@ class ZeroConfPrimer:
         self._lock = threading.Lock()
         self._token_lock = threading.Lock()
         self._cached_token: str | None = None
+        self._cached_user_id: str | None = None
         self._token_expires_at: float = 0.0
         self._stopped = True
         self._power_on_running = False
@@ -85,12 +86,6 @@ class ZeroConfPrimer:
         """
         if not self._settings.spotify_client_id:
             return
-
-        with self._lock:
-            speaker = self._speakers.get(device_id)
-            if speaker and speaker.ip_address:
-                speaker.account_id = account_id
-                return
 
         ip = self._resolve_speaker_ip(account_id, device_id)
         should_prime = False
@@ -112,7 +107,7 @@ class ZeroConfPrimer:
                 )
             else:
                 speaker.account_id = account_id
-                if speaker.ip_address is None and ip is not None:
+                if ip is not None and speaker.ip_address != ip:
                     speaker.ip_address = ip
                     should_prime = True
 
@@ -250,7 +245,7 @@ class ZeroConfPrimer:
                 return None
 
             now = time.time()
-            if self._cached_token and now < self._token_expires_at - 120:
+            if self._cached_token and self._cached_user_id == user_id and now < self._token_expires_at - 120:
                 return self._cached_token, user_id
 
             token_with_expiry = self._spotify.get_fresh_token_with_expiry_sync()
@@ -260,6 +255,7 @@ class ZeroConfPrimer:
             token, expires_at = token_with_expiry
 
             self._cached_token = token
+            self._cached_user_id = user_id
             self._token_expires_at = expires_at
             return token, user_id
 
@@ -442,7 +438,11 @@ class ZeroConfPrimer:
             headers={"Content-Type": "application/x-www-form-urlencoded"},
         )
 
-        opener = urllib.request.build_opener(urllib.request.HTTPHandler, _NoRedirectHandler)
+        opener = urllib.request.build_opener(
+            urllib.request.ProxyHandler({}),
+            urllib.request.HTTPHandler,
+            _NoRedirectHandler,
+        )
         with opener.open(req, timeout=10) as resp:
             return json.loads(resp.read())
 
@@ -451,7 +451,11 @@ class ZeroConfPrimer:
         """Check the speaker's activeUser via ZeroConf getInfo."""
         ZeroConfPrimer._validate_speaker_ip(speaker_ip)
         url = f"http://{speaker_ip}:{ZEROCONF_PORT}/zc?action=getInfo"
-        opener = urllib.request.build_opener(urllib.request.HTTPHandler, _NoRedirectHandler)
+        opener = urllib.request.build_opener(
+            urllib.request.ProxyHandler({}),
+            urllib.request.HTTPHandler,
+            _NoRedirectHandler,
+        )
         with opener.open(url, timeout=5) as resp:
             info = json.loads(resp.read())
         return info.get("activeUser", "")

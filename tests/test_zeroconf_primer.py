@@ -3,6 +3,7 @@
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+import soundcork.marge as marge_module
 import soundcork.zeroconf_primer as primer_module
 from soundcork.marge import update_device_poweron
 from soundcork.zeroconf_primer import ZeroConfPrimer
@@ -75,6 +76,20 @@ def test_token_cache_uses_actual_spotify_expiration(monkeypatch, tmp_path):
     assert primer._token_expires_at == 1_100
 
 
+def test_token_cache_is_invalidated_when_linked_user_changes(monkeypatch, tmp_path):
+    primer, spotify, _ = _primer(tmp_path)
+    spotify.get_spotify_user_id.side_effect = ["old-user", "new-user"]
+    spotify.get_fresh_token_with_expiry_sync.side_effect = [
+        ("old-token", 4_000),
+        ("new-token", 4_000),
+    ]
+    monkeypatch.setattr(primer_module.time, "time", MagicMock(return_value=1_000))
+
+    assert primer._get_token() == ("old-token", "old-user")
+    assert primer._get_token() == ("new-token", "new-user")
+    assert spotify.get_fresh_token_with_expiry_sync.call_count == 2
+
+
 def test_seed_uses_datastore_account_listing(tmp_path):
     primer, _, datastore = _primer(tmp_path)
     datastore.list_accounts.return_value = ["1234567"]
@@ -142,6 +157,31 @@ def test_registration_retries_ip_resolution(monkeypatch, tmp_path):
     assert len(threads) == 1
 
 
+def test_registration_refreshes_changed_ip(monkeypatch, tmp_path):
+    primer, _, _ = _primer(tmp_path)
+    monkeypatch.setattr(
+        primer,
+        "_resolve_speaker_ip",
+        MagicMock(side_effect=["192.168.1.42", "192.168.1.43"]),
+    )
+    threads = []
+
+    class FakeThread:
+        def __init__(self, **kwargs):
+            threads.append(kwargs)
+
+        def start(self):
+            pass
+
+    monkeypatch.setattr(primer_module.threading, "Thread", FakeThread)
+
+    primer.register_speaker("1234567", "AABBCCDDEEFF")
+    primer.register_speaker("1234567", "AABBCCDDEEFF")
+
+    assert primer._speakers["AABBCCDDEEFF"].ip_address == "192.168.1.43"
+    assert len(threads) == 2
+
+
 def test_power_on_requests_are_coalesced(monkeypatch, tmp_path):
     primer, _, _ = _primer(tmp_path)
     threads = []
@@ -173,15 +213,30 @@ def test_resolve_speaker_ip_rejects_non_private_target(tmp_path):
     assert primer._resolve_speaker_ip("1234567", "AABBCCDDEEFF") == "192.168.1.42"
 
 
-def test_power_on_persists_observed_ip_instead_of_untrusted_xml():
+def test_power_on_persists_observed_ip_instead_of_untrusted_xml(monkeypatch):
     datastore = MagicMock()
     reported = SimpleNamespace(device_id="AABBCCDDEEFF", ip_address="192.168.1.66")
     current = SimpleNamespace(device_id="AABBCCDDEEFF", ip_address="192.168.1.42")
     datastore.device_info_from_poweron_xml.return_value = reported
     datastore.find_device.return_value = current, "1234567"
+    monkeypatch.setattr(marge_module, "_device_id_at_ip", MagicMock(return_value="AABBCCDDEEFF"), raising=False)
 
     account = update_device_poweron(datastore, b"<info/>", "192.168.1.43")
 
     assert account == "1234567"
     assert current.ip_address == "192.168.1.43"
     datastore.save_device_info.assert_called_once_with(current, "1234567")
+
+
+def test_power_on_rejects_rebind_when_observed_device_id_does_not_match(monkeypatch):
+    datastore = MagicMock()
+    reported = SimpleNamespace(device_id="AABBCCDDEEFF", ip_address="192.168.1.66")
+    current = SimpleNamespace(device_id="AABBCCDDEEFF", ip_address="192.168.1.42")
+    datastore.device_info_from_poweron_xml.return_value = reported
+    datastore.find_device.return_value = current, "1234567"
+    monkeypatch.setattr(marge_module, "_device_id_at_ip", MagicMock(return_value="001122334455"), raising=False)
+
+    update_device_poweron(datastore, b"<info/>", "192.168.1.43")
+
+    assert current.ip_address == "192.168.1.42"
+    datastore.save_device_info.assert_not_called()
