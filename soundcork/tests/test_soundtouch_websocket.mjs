@@ -17,10 +17,13 @@ globalThis.setTimeout = (callback, delay) => {
 };
 
 class FakeWebSocket {
+    static instances = [];
+
     constructor(url, protocol) {
         this.url = url;
         this.protocol = protocol;
         this.listeners = new Map();
+        FakeWebSocket.instances.push(this);
     }
 
     addEventListener(name, callback) {
@@ -52,7 +55,32 @@ test("closed sockets reconnect with backoff", () => {
 });
 
 test("HTTPS pages fail closed instead of retrying mixed content", () => {
+    const timerCount = timers.length;
     window.location.protocol = "https:";
     assert.equal(connectWebsocket("speaker", "192.168.1.42", "Kitchen", handler), null);
-    assert.equal(timers.length, 1);
+    assert.equal(timers.length, timerCount);
+    window.location.protocol = "http:";
+});
+
+test("reconnect attempts are bounded", () => {
+    const timerCount = timers.length;
+    let socket = connectWebsocket("speaker", "192.168.1.42", "Kitchen", handler);
+
+    for (let attempt = 0; attempt < 8; attempt += 1) {
+        socket.listeners.get("close")();
+        timers.at(-1).callback();
+        socket = FakeWebSocket.instances.at(-1);
+    }
+    socket.listeners.get("close")();
+
+    assert.equal(timers.length - timerCount, 8);
+    assert.equal(timers.at(-1).delay, 60000);
+});
+
+test("page shutdown suppresses new connections", () => {
+    const instanceCount = FakeWebSocket.instances.length;
+    listeners.get("beforeunload")();
+
+    assert.equal(connectWebsocket("speaker", "192.168.1.42", "Kitchen", handler), null);
+    assert.equal(FakeWebSocket.instances.length, instanceCount);
 });
