@@ -112,7 +112,6 @@ class IncompleteNowPlayingSpeakers(FakeSpeakers):
         now_playing = SimpleNamespace(
             StationName="",
             ContentItem=None,
-            ContainerArtUrl="",
             PlayStatus="STOP_STATE",
         )
         return now_playing, self.get_volume(device_id)
@@ -152,7 +151,7 @@ def test_dashboard_disables_offline_device(monkeypatch):
     client, _speakers = make_client(monkeypatch, FakeSpeakers(online=False))
 
     response = client.get(
-        "/miniapp/dashboard",
+        f"/miniapp/dashboard?selected_device_id={DEVICE_ID}",
         headers={"Cookie": f"soundcork_account_id={ACCOUNT_ID}"},
     )
 
@@ -205,11 +204,12 @@ def test_dashboard_isolates_incomplete_now_playing_response(monkeypatch):
     client, _speakers = make_client(monkeypatch, IncompleteNowPlayingSpeakers())
 
     response = client.get(
-        "/miniapp/dashboard",
+        f"/miniapp/dashboard?selected_device_id={DEVICE_ID}",
         headers={"Cookie": f"soundcork_account_id={ACCOUNT_ID}"},
     )
 
     assert f'id="{DEVICE_ID}-info"' in response.text
+    assert "[Unknown]" in response.text
     assert "Error loading dashboard data" not in response.text
 
 
