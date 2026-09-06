@@ -70,6 +70,7 @@ class ZeroConfPrimer:
         self._lock = threading.Lock()
         self._cached_token: str | None = None
         self._token_expires_at: float = 0.0
+        self._stopped = True
 
     # --- Speaker registration ---
 
@@ -82,10 +83,17 @@ class ZeroConfPrimer:
         if not self._settings.spotify_client_id:
             return
 
+        with self._lock:
+            speaker = self._speakers.get(device_id)
+            if speaker:
+                speaker.account_id = account_id
+                return
+
+        ip = self._resolve_speaker_ip(account_id, device_id)
         is_new = False
         with self._lock:
-            if device_id not in self._speakers:
-                ip = self._resolve_speaker_ip(account_id, device_id)
+            speaker = self._speakers.get(device_id)
+            if speaker is None:
                 self._speakers[device_id] = TrackedSpeaker(
                     account_id=account_id,
                     device_id=device_id,
@@ -99,8 +107,7 @@ class ZeroConfPrimer:
                     ip,
                 )
             else:
-                # Update account_id in case it changed
-                self._speakers[device_id].account_id = account_id
+                speaker.account_id = account_id
 
         if is_new:
             speaker = self._speakers[device_id]
@@ -111,7 +118,7 @@ class ZeroConfPrimer:
                     daemon=True,
                 ).start()
 
-    def on_power_on(self, source_ip: str | None = None):
+    def on_power_on(self):
         """Called when a speaker sends power_on.
 
         Primes all known speakers with retry/backoff, since the
@@ -123,7 +130,6 @@ class ZeroConfPrimer:
 
         threading.Thread(
             target=self._power_on_prime,
-            args=(source_ip,),
             daemon=True,
         ).start()
 
@@ -134,6 +140,11 @@ class ZeroConfPrimer:
         if not self._settings.spotify_client_id:
             logger.info("Spotify not configured — periodic primer disabled")
             return
+
+        with self._lock:
+            if not self._stopped:
+                return
+            self._stopped = False
 
         # Seed the registry from the datastore on startup
         self._seed_from_datastore()
@@ -146,25 +157,29 @@ class ZeroConfPrimer:
 
     def stop_periodic(self):
         """Stop the periodic re-prime background task."""
-        if self._timer:
-            self._timer.cancel()
+        with self._lock:
+            self._stopped = True
+            timer = self._timer
             self._timer = None
+        if timer:
+            timer.cancel()
 
     # --- Internal ---
 
     def _seed_from_datastore(self):
         """Populate the speaker registry from the datastore on startup."""
-        import os
-
         data_dir = self._settings.data_dir
-        if not data_dir or not os.path.isdir(data_dir):
+        if not data_dir:
             return
 
-        for account_id in os.listdir(data_dir):
-            account_path = os.path.join(data_dir, account_id)
-            if not os.path.isdir(account_path):
-                continue
+        try:
+            account_ids = self._datastore.list_accounts()
+        except (StopIteration, FileNotFoundError):
+            return
 
+        for account_id in account_ids:
+            if not account_id:
+                continue
             try:
                 device_ids = self._datastore.list_devices(account_id)
             except (StopIteration, FileNotFoundError):
@@ -211,13 +226,14 @@ class ZeroConfPrimer:
         if self._cached_token and now < self._token_expires_at - 120:
             return self._cached_token, user_id
 
-        token = self._spotify.get_fresh_token_sync()
-        if not token:
+        token_with_expiry = self._spotify.get_fresh_token_with_expiry_sync()
+        if not token_with_expiry:
             logger.warning("Could not get Spotify access token")
             return None
+        token, expires_at = token_with_expiry
 
         self._cached_token = token
-        self._token_expires_at = now + 3600  # tokens last 1 hour
+        self._token_expires_at = expires_at
         return token, user_id
 
     def _prime_if_needed(self, speaker: TrackedSpeaker) -> bool:
@@ -290,14 +306,18 @@ class ZeroConfPrimer:
             speaker.prime_failures += 1
             return False
 
-    def _power_on_prime(self, source_ip: str | None):
+    def _power_on_prime(self):
         """Prime speakers after boot with retry/backoff."""
         with self._lock:
             speakers = list(self._speakers.values())
 
         if not speakers:
-            logger.info("No speakers registered — nothing to prime")
-            return
+            self._seed_from_datastore()
+            with self._lock:
+                speakers = list(self._speakers.values())
+            if not speakers:
+                logger.info("No speakers registered — nothing to prime")
+                return
 
         for delay in BOOT_RETRY_DELAYS:
             logger.info(
@@ -322,9 +342,13 @@ class ZeroConfPrimer:
 
     def _schedule_next(self):
         """Schedule the next periodic check."""
-        self._timer = threading.Timer(PERIODIC_CHECK_SECONDS, self._periodic_tick)
-        self._timer.daemon = True
-        self._timer.start()
+        with self._lock:
+            if self._stopped:
+                return
+            timer = threading.Timer(PERIODIC_CHECK_SECONDS, self._periodic_tick)
+            timer.daemon = True
+            self._timer = timer
+        timer.start()
 
     def _periodic_tick(self):
         """Periodic task: check and re-prime all speakers if needed."""

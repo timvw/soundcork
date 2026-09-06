@@ -179,13 +179,14 @@ class SpotifyService:
 
         return account["accessToken"]
 
-    def get_fresh_token_sync(self) -> str | None:
-        """Get a valid Spotify access token synchronously.
+    def get_fresh_token_with_expiry_sync(self) -> tuple[str, int] | None:
+        """Get a valid Spotify access token and its expiration synchronously.
 
         Used by the marge endpoints (which are sync) to inject fresh
         tokens into the /full account response for the speaker.
 
-        Returns None if no Spotify account is linked or refresh fails.
+        Returns ``(access_token, expires_at)`` or None if no Spotify account
+        is linked or refresh fails.
         """
         accounts = self._load_accounts()
         if not accounts:
@@ -233,7 +234,12 @@ class SpotifyService:
                 logger.exception("Failed to refresh Spotify token")
                 return None
 
-        return account["accessToken"]
+        return account["accessToken"], int(account["tokenExpiresAt"])
+
+    def get_fresh_token_sync(self) -> str | None:
+        """Get a valid Spotify access token synchronously."""
+        token = self.get_fresh_token_with_expiry_sync()
+        return token[0] if token else None
 
     def get_spotify_user_id(self) -> str | None:
         """Get the Spotify user ID of the first linked account."""
