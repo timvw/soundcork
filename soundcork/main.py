@@ -1,3 +1,4 @@
+# Codex: Wire the Spotify ZeroConf primer into server lifecycle and speaker requests.
 import ipaddress
 import json
 import logging

@@ -39,6 +39,7 @@ select = ["E", "F", "W", "I"]
 known-first-party = ["soundcork"]
 
 [tool.ruff.format]
+# Codex: Keep source formatting from rewriting illustrative Markdown snippets.
 exclude = ["docs/**/*.md"]
 
 [tool.pytest.ini_options]

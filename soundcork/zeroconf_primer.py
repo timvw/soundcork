@@ -24,6 +24,8 @@ Configuration:
   - Speaker IP addresses are read from the datastore (DeviceInfo)
 """
 
+# Codex: Implement secure, lifecycle-managed ZeroConf Spotify priming.
+
 import ipaddress
 import json
 import logging

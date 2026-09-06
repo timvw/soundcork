@@ -1,5 +1,7 @@
 """Unit tests for Spotify ZeroConf primer lifecycle and token caching."""
 
+# Codex: Exercise primer security, retries, caching, and lifecycle behavior.
+
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 

@@ -12,6 +12,7 @@ from bosesoundtouchapi.soundtouchclient import (
 )
 from bosesoundtouchapi.soundtouchdiscovery import SoundTouchDiscovery  # type: ignore
 from pydantic import BaseModel
+from urllib3 import PoolManager, Timeout
 
 from soundcork.config import Settings
 from soundcork.datastore import DataStore
@@ -321,3 +322,25 @@ class Speakers:
 
         client = SoundTouchClient(cd.st_device)
         return client.GetNowPlayingStatus()
+
+    def get_now_playing_and_volume(
+        self, device_id: str, timeout: float
+    ) -> tuple[NowPlayingStatus | None, Volume | None]:
+        """Fetch volatile speaker state with bounded network reads."""
+        cd = self.all_devices().get(device_id)
+        if not cd or not cd.st_device:
+            logger.error(f"Device {device_id} not found or not online")
+            return None, None
+
+        # Codex: Split the route budget across both sequential HTTP requests so
+        # timed-out executor work cannot occupy shared worker threads indefinitely.
+        request_timeout = max(timeout / 2, 0.1)
+        manager = PoolManager(
+            timeout=Timeout(total=request_timeout),
+            retries=False,
+            num_pools=1,
+            maxsize=1,
+            block=False,
+        )
+        client = SoundTouchClient(cd.st_device, manager=manager)
+        return client.GetNowPlayingStatus(), client.GetVolume()
