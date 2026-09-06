@@ -1,7 +1,10 @@
+import shutil
+import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -86,7 +89,6 @@ class FakeSpeakers:
 
 
 def make_client(monkeypatch, speakers: FakeSpeakers | None = None):
-    monkeypatch.chdir(Path(__file__).resolve().parents[1])
     app = FastAPI()
     fake_speakers = speakers or FakeSpeakers()
     app.include_router(get_miniapp_router(cast(Any, FakeDatastore()), cast(Any, fake_speakers)))
@@ -141,14 +143,19 @@ def test_account_cookie_is_http_only(monkeypatch):
     assert "HttpOnly" in account_cookie
 
 
-def test_websocket_client_has_offline_safe_lifecycle():
-    # Codex: Static contract for the dependency-free browser module.
-    js = (Path(__file__).resolve().parents[1] / "static/js/soundtouch_websocket.js").read_text()
-    handler = (Path(__file__).resolve().parents[1] / "static/js/miniapp_handler.js").read_text()
+def test_stop_url_omits_none_content_item(monkeypatch):
+    client, _speakers = make_client(monkeypatch)
 
-    assert "cookieStore" not in handler
-    assert "document.body.dataset.accountId" in handler
-    assert "setTimeout" in js
-    assert 'addEventListener("close"' in js
-    assert "textContent" in js
-    assert "$." not in js
+    response = client.get(
+        f"/miniapp/dashboard?selected_device_id={DEVICE_ID}",
+        headers={"Cookie": f"soundcork_account_id={ACCOUNT_ID}"},
+    )
+
+    assert "selected_content_item_id=None" not in response.text
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="Node.js is unavailable")
+def test_websocket_client_behavior():
+    # Codex: Run the dependency-free browser behavior suite through pytest/CI.
+    test_file = Path(__file__).with_name("test_soundtouch_websocket.mjs")
+    subprocess.run(["node", "--test", str(test_file)], check=True)
