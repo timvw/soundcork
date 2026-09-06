@@ -1,5 +1,7 @@
 """Tests for IP restriction on Bose protocol endpoints and webui SSRF hardening."""
 
+# Codex: Cover trusted-proxy handling used by primer registration middleware.
+
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -150,6 +152,14 @@ class TestBoseProtocolIPRestriction:
         resp = client.get(
             "/marge/streaming/sourceproviders",
             headers={"X-Forwarded-For": "192.168.1.50, 203.0.113.99"},
+        )
+        assert resp.status_code == 403
+
+    def test_xff_invalid_rightmost_entry_fails_closed(self, client):
+        """An invalid value appended by a trusted proxy must not expose client XFF."""
+        resp = client.get(
+            "/marge/streaming/sourceproviders",
+            headers={"X-Forwarded-For": "192.168.1.143, unknown"},
         )
         assert resp.status_code == 403
 

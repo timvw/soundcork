@@ -4,10 +4,14 @@ Handles the authorization code flow, token management, and entity
 resolution for the ueberboese-app's Spotify features.
 """
 
+# Codex: Provide concurrency-safe access tokens with their real expiry metadata.
+
 import asyncio
 import json
 import logging
 import os
+import tempfile
+import threading
 import time
 import urllib.parse
 from datetime import datetime, timezone
@@ -30,6 +34,7 @@ class SpotifyService:
     def __init__(self):
         self._settings = Settings()
         self._accounts_file = os.path.join(self._settings.data_dir, "spotify", "accounts.json")
+        self._accounts_lock = threading.Lock()
 
     def _ensure_spotify_dir(self):
         """Create the spotify data directory if it doesn't exist."""
@@ -50,8 +55,21 @@ class SpotifyService:
     def _save_accounts(self, accounts: list[dict]):
         """Save Spotify accounts to disk."""
         self._ensure_spotify_dir()
-        with open(self._accounts_file, "w") as f:
-            json.dump(accounts, f, indent=2)
+        temp_path = ""
+        try:
+            with tempfile.NamedTemporaryFile(
+                "w",
+                dir=os.path.dirname(self._accounts_file),
+                delete=False,
+            ) as f:
+                temp_path = f.name
+                json.dump(accounts, f, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(temp_path, self._accounts_file)
+        finally:
+            if temp_path and os.path.exists(temp_path):
+                os.unlink(temp_path)
 
     def build_authorize_url(self, redirect_uri: str | None = None) -> str:
         """Build the Spotify authorization URL for the OAuth flow.
@@ -98,10 +116,11 @@ class SpotifyService:
         }
 
         # Upsert into accounts list (replace if same user ID exists)
-        accounts = self._load_accounts()
-        accounts = [a for a in accounts if a["spotifyUserId"] != account["spotifyUserId"]]
-        accounts.append(account)
-        self._save_accounts(accounts)
+        with self._accounts_lock:
+            accounts = self._load_accounts()
+            accounts = [a for a in accounts if a["spotifyUserId"] != account["spotifyUserId"]]
+            accounts.append(account)
+            self._save_accounts(accounts)
 
         logger.info("Spotify account linked: %s", account["displayName"])
         return account
@@ -156,37 +175,24 @@ class SpotifyService:
 
         Uses the first stored account's tokens.
         """
-        accounts = self._load_accounts()
-        if not accounts:
+        token = await asyncio.to_thread(self.get_fresh_token_with_expiry_sync)
+        if not token:
             raise RuntimeError("No Spotify accounts linked")
+        return token[0]
 
-        account = accounts[0]
-        now = int(time.time())
-
-        # Refresh if token is expired or about to expire (60s buffer)
-        if now >= account.get("tokenExpiresAt", 0) - 60:
-            refresh_token = account.get("refreshToken", "")
-            if not refresh_token:
-                raise RuntimeError("No refresh token available")
-
-            token_data = await self._refresh_access_token(refresh_token)
-            account["accessToken"] = token_data["access_token"]
-            account["tokenExpiresAt"] = now + token_data.get("expires_in", 3600)
-            # Spotify may return a new refresh token
-            if "refresh_token" in token_data:
-                account["refreshToken"] = token_data["refresh_token"]
-            self._save_accounts(accounts)
-
-        return account["accessToken"]
-
-    def get_fresh_token_sync(self) -> str | None:
-        """Get a valid Spotify access token synchronously.
+    def get_fresh_token_with_expiry_sync(self) -> tuple[str, int] | None:
+        """Get a valid Spotify access token and its expiration synchronously.
 
         Used by the marge endpoints (which are sync) to inject fresh
         tokens into the /full account response for the speaker.
 
-        Returns None if no Spotify account is linked or refresh fails.
+        Returns ``(access_token, expires_at)`` or None if no Spotify account
+        is linked or refresh fails.
         """
+        with self._accounts_lock:
+            return self._get_fresh_token_with_expiry_unlocked()
+
+    def _get_fresh_token_with_expiry_unlocked(self) -> tuple[str, int] | None:
         accounts = self._load_accounts()
         if not accounts:
             return None
@@ -233,7 +239,12 @@ class SpotifyService:
                 logger.exception("Failed to refresh Spotify token")
                 return None
 
-        return account["accessToken"]
+        return account["accessToken"], int(account["tokenExpiresAt"])
+
+    def get_fresh_token_sync(self) -> str | None:
+        """Get a valid Spotify access token synchronously."""
+        token = self.get_fresh_token_with_expiry_sync()
+        return token[0] if token else None
 
     def get_spotify_user_id(self) -> str | None:
         """Get the Spotify user ID of the first linked account."""

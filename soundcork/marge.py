@@ -1,4 +1,7 @@
+# Codex: Notify the primer when an observed speaker powers on.
 import logging
+import time
+import urllib.request
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from http import HTTPStatus
@@ -31,6 +34,64 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 settings = Settings()
+MAX_SPEAKER_INFO_BYTES = 64 * 1024
+SPEAKER_INFO_TIMEOUT_SECONDS = 1.0
+
+
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def _device_id_at_ip(ip_address: str) -> str | None:
+    """Read the hardware ID from a speaker without using proxies or redirects."""
+    opener = urllib.request.build_opener(
+        urllib.request.ProxyHandler({}),
+        urllib.request.HTTPHandler,
+        _NoRedirectHandler,
+    )
+    try:
+        with opener.open(
+            f"http://{ip_address}:8090/info",
+            timeout=SPEAKER_INFO_TIMEOUT_SECONDS,
+        ) as response:
+            payload = _read_speaker_info(response)
+            if len(payload) > MAX_SPEAKER_INFO_BYTES:
+                logger.warning("Speaker identity response too large at %s", ip_address)
+                return None
+            if b"<!DOCTYPE" in payload.upper() or b"<!ENTITY" in payload.upper():
+                logger.warning("Rejected speaker identity response with DTD at %s", ip_address)
+                return None
+            info = ET.fromstring(payload)
+        return info.attrib.get("deviceID")
+    except Exception:
+        logger.warning("Could not verify speaker identity at %s", ip_address)
+        return None
+
+
+def _read_speaker_info(response) -> bytes:
+    """Read a small response against one wall-clock deadline."""
+    read_chunk = getattr(response, "read1", None)
+    if not callable(read_chunk):
+        return response.read(MAX_SPEAKER_INFO_BYTES + 1)
+
+    deadline = time.monotonic() + SPEAKER_INFO_TIMEOUT_SECONDS
+    payload = bytearray()
+    while len(payload) <= MAX_SPEAKER_INFO_BYTES:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("speaker identity response deadline exceeded")
+
+        # Codex: read1 performs one underlying receive; shrinking the socket
+        # timeout prevents a slow-drip peer from resetting a per-read timeout.
+        sock = getattr(getattr(getattr(response, "fp", None), "raw", None), "_sock", None)
+        if sock is not None:
+            sock.settimeout(remaining)
+        chunk = read_chunk(min(8192, MAX_SPEAKER_INFO_BYTES + 1 - len(payload)))
+        if not chunk:
+            break
+        payload.extend(chunk)
+    return bytes(payload)
 
 
 def source_providers() -> list[SourceProvider]:
@@ -535,14 +596,27 @@ def remove_device_from_account(datastore: "DataStore", account: str, device: str
 # updates the poweron data for the device represented by the
 # poweron_xml xml. if the device is part of an account, also checks
 # to see if the ip address needs to be updated, and if so, updates it.
-def update_device_poweron(datastore: "DataStore", poweron_xml: bytes) -> str | None:
+def update_device_poweron(
+    datastore: "DataStore",
+    poweron_xml: bytes,
+    observed_ip: str | None = None,
+) -> str | None:
     poweron_elem = ET.fromstring(poweron_xml)
     device = datastore.device_info_from_poweron_xml(poweron_elem)
     current_device, account_id = datastore.find_device(device.device_id)
     if current_device and account_id:
-        if current_device.ip_address != device.ip_address:
-            current_device.ip_address = device.ip_address
-            datastore.save_device_info(current_device, account_id)
+        # The XML body is unauthenticated. Use the network-observed source so a
+        # forged power_on payload cannot redirect Spotify tokens to an attacker.
+        if observed_ip and current_device.ip_address != observed_ip:
+            if _device_id_at_ip(observed_ip) == device.device_id:
+                current_device.ip_address = observed_ip
+                datastore.save_device_info(current_device, account_id)
+            else:
+                logger.warning(
+                    "Ignoring unverified IP change for device %s: %s",
+                    device.device_id,
+                    observed_ip,
+                )
     datastore.save_poweron(device.device_id, poweron_xml.decode())
     return account_id
 

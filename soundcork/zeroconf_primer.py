@@ -24,6 +24,9 @@ Configuration:
   - Speaker IP addresses are read from the datastore (DeviceInfo)
 """
 
+# Codex: Implement secure, lifecycle-managed ZeroConf Spotify priming.
+
+import ipaddress
 import json
 import logging
 import threading
@@ -68,8 +71,12 @@ class ZeroConfPrimer:
         self._timer: threading.Timer | None = None
         self._speakers: dict[str, TrackedSpeaker] = {}  # device_id -> TrackedSpeaker
         self._lock = threading.Lock()
+        self._token_lock = threading.Lock()
         self._cached_token: str | None = None
+        self._cached_user_id: str | None = None
         self._token_expires_at: float = 0.0
+        self._stopped = True
+        self._power_on_running = False
 
     # --- Speaker registration ---
 
@@ -82,16 +89,18 @@ class ZeroConfPrimer:
         if not self._settings.spotify_client_id:
             return
 
-        is_new = False
+        ip = self._resolve_speaker_ip(account_id, device_id)
+        should_prime = False
         with self._lock:
-            if device_id not in self._speakers:
-                ip = self._resolve_speaker_ip(account_id, device_id)
-                self._speakers[device_id] = TrackedSpeaker(
+            speaker = self._speakers.get(device_id)
+            if speaker is None:
+                speaker = TrackedSpeaker(
                     account_id=account_id,
                     device_id=device_id,
                     ip_address=ip,
                 )
-                is_new = True
+                self._speakers[device_id] = speaker
+                should_prime = ip is not None
                 logger.info(
                     "New speaker registered: %s (account=%s, ip=%s)",
                     device_id,
@@ -99,19 +108,19 @@ class ZeroConfPrimer:
                     ip,
                 )
             else:
-                # Update account_id in case it changed
-                self._speakers[device_id].account_id = account_id
+                speaker.account_id = account_id
+                if ip is not None and speaker.ip_address != ip:
+                    speaker.ip_address = ip
+                    should_prime = True
 
-        if is_new:
-            speaker = self._speakers[device_id]
-            if speaker.ip_address:
-                threading.Thread(
-                    target=self._prime_if_needed,
-                    args=(speaker,),
-                    daemon=True,
-                ).start()
+        if should_prime:
+            threading.Thread(
+                target=self._prime_if_needed,
+                args=(speaker,),
+                daemon=True,
+            ).start()
 
-    def on_power_on(self, source_ip: str | None = None):
+    def on_power_on(self):
         """Called when a speaker sends power_on.
 
         Primes all known speakers with retry/backoff, since the
@@ -121,11 +130,20 @@ class ZeroConfPrimer:
         if not self._settings.spotify_client_id:
             return
 
-        threading.Thread(
-            target=self._power_on_prime,
-            args=(source_ip,),
-            daemon=True,
-        ).start()
+        with self._lock:
+            if self._power_on_running:
+                return
+            self._power_on_running = True
+
+        try:
+            threading.Thread(
+                target=self._run_power_on_prime,
+                daemon=True,
+            ).start()
+        except Exception:
+            with self._lock:
+                self._power_on_running = False
+            raise
 
     # --- Periodic ---
 
@@ -135,8 +153,19 @@ class ZeroConfPrimer:
             logger.info("Spotify not configured — periodic primer disabled")
             return
 
+        with self._lock:
+            if not self._stopped:
+                return
+            self._stopped = False
+
         # Seed the registry from the datastore on startup
         self._seed_from_datastore()
+        with self._lock:
+            has_speakers = bool(self._speakers)
+        if has_speakers:
+            # Codex: Prime restored speakers now instead of waiting for the first
+            # 45-minute periodic interval or a later marge request.
+            threading.Thread(target=self._prime_seeded_speakers, daemon=True).start()
 
         self._schedule_next()
         logger.info(
@@ -146,25 +175,29 @@ class ZeroConfPrimer:
 
     def stop_periodic(self):
         """Stop the periodic re-prime background task."""
-        if self._timer:
-            self._timer.cancel()
+        with self._lock:
+            self._stopped = True
+            timer = self._timer
             self._timer = None
+        if timer:
+            timer.cancel()
 
     # --- Internal ---
 
     def _seed_from_datastore(self):
         """Populate the speaker registry from the datastore on startup."""
-        import os
-
         data_dir = self._settings.data_dir
-        if not data_dir or not os.path.isdir(data_dir):
+        if not data_dir:
             return
 
-        for account_id in os.listdir(data_dir):
-            account_path = os.path.join(data_dir, account_id)
-            if not os.path.isdir(account_path):
-                continue
+        try:
+            account_ids = self._datastore.list_accounts()
+        except (StopIteration, FileNotFoundError):
+            return
 
+        for account_id in account_ids:
+            if not account_id:
+                continue
             try:
                 device_ids = self._datastore.list_devices(account_id)
             except (StopIteration, FileNotFoundError):
@@ -191,10 +224,33 @@ class ZeroConfPrimer:
         """Look up a speaker's IP address from the datastore."""
         try:
             info = self._datastore.get_device_info(account_id, device_id)
-            return info.ip_address
+            address = ipaddress.ip_address(info.ip_address)
+            if (
+                address.version != 4
+                or not address.is_private
+                or address.is_loopback
+                or address.is_link_local
+                or address.is_multicast
+                or address.is_unspecified
+                or address.is_reserved
+            ):
+                raise ValueError("speaker address is not a private IPv4 address")
+            return str(address)
         except Exception:
             logger.debug("Could not resolve IP for %s/%s", account_id, device_id)
             return None
+
+    def _prime_seeded_speakers(self):
+        """Prime datastore-discovered speakers once after server startup."""
+        with self._lock:
+            if self._stopped:
+                return
+            speakers = list(self._speakers.values())
+        for speaker in speakers:
+            with self._lock:
+                if self._stopped:
+                    return
+            self._prime_if_needed(speaker)
 
     def _get_token(self) -> tuple[str, str] | None:
         """Get a valid Spotify access token and user ID.
@@ -202,23 +258,26 @@ class ZeroConfPrimer:
         Caches the token to avoid refreshing for every speaker.
         Returns (token, user_id) or None.
         """
-        user_id = self._spotify.get_spotify_user_id()
-        if not user_id:
-            logger.warning("No Spotify user ID configured")
-            return None
+        with self._token_lock:
+            user_id = self._spotify.get_spotify_user_id()
+            if not user_id:
+                logger.warning("No Spotify user ID configured")
+                return None
 
-        now = time.time()
-        if self._cached_token and now < self._token_expires_at - 120:
-            return self._cached_token, user_id
+            now = time.time()
+            if self._cached_token and self._cached_user_id == user_id and now < self._token_expires_at - 120:
+                return self._cached_token, user_id
 
-        token = self._spotify.get_fresh_token_sync()
-        if not token:
-            logger.warning("Could not get Spotify access token")
-            return None
+            token_with_expiry = self._spotify.get_fresh_token_with_expiry_sync()
+            if not token_with_expiry:
+                logger.warning("Could not get Spotify access token")
+                return None
+            token, expires_at = token_with_expiry
 
-        self._cached_token = token
-        self._token_expires_at = now + 3600  # tokens last 1 hour
-        return token, user_id
+            self._cached_token = token
+            self._cached_user_id = user_id
+            self._token_expires_at = expires_at
+            return token, user_id
 
     def _prime_if_needed(self, speaker: TrackedSpeaker) -> bool:
         """Check activeUser and prime only if empty."""
@@ -228,13 +287,16 @@ class ZeroConfPrimer:
         try:
             active_user = self._get_active_user(speaker.ip_address)
             if active_user:
-                logger.debug(
-                    "Speaker %s already primed (activeUser=%s)",
-                    speaker.ip_address,
-                    active_user,
-                )
-                speaker.last_primed = time.time()
-                return True
+                now = time.time()
+                if speaker.last_primed and now - speaker.last_primed < PERIODIC_CHECK_SECONDS:
+                    logger.debug(
+                        "Speaker %s already primed (activeUser=%s)",
+                        speaker.ip_address,
+                        active_user,
+                    )
+                    with self._lock:
+                        speaker.prime_failures = 0
+                    return True
         except Exception:
             logger.debug("Could not check activeUser for %s", speaker.ip_address)
 
@@ -260,7 +322,7 @@ class ZeroConfPrimer:
                     status,
                     result.get("statusString", ""),
                 )
-                speaker.prime_failures += 1
+                self._record_failure(speaker)
                 return False
 
             logger.info("addUser accepted by %s (status 101)", speaker.ip_address)
@@ -274,32 +336,53 @@ class ZeroConfPrimer:
                     speaker.ip_address,
                     active_user,
                 )
-                speaker.last_primed = time.time()
-                speaker.prime_failures = 0
+                with self._lock:
+                    speaker.last_primed = time.time()
+                    speaker.prime_failures = 0
                 return True
             else:
                 logger.warning(
                     "Speaker %s returned 101 but activeUser still empty",
                     speaker.ip_address,
                 )
-                speaker.prime_failures += 1
+                self._record_failure(speaker)
                 return False
 
         except Exception:
             logger.exception("Failed to prime speaker %s", speaker.ip_address)
-            speaker.prime_failures += 1
+            self._record_failure(speaker)
             return False
 
-    def _power_on_prime(self, source_ip: str | None):
+    def _record_failure(self, speaker: TrackedSpeaker):
+        with self._lock:
+            speaker.prime_failures += 1
+
+    def _run_power_on_prime(self):
+        try:
+            self._power_on_prime()
+        finally:
+            with self._lock:
+                self._power_on_running = False
+
+    def _power_on_prime(self):
         """Prime speakers after boot with retry/backoff."""
         with self._lock:
+            if self._stopped:
+                return
             speakers = list(self._speakers.values())
 
         if not speakers:
-            logger.info("No speakers registered — nothing to prime")
-            return
+            self._seed_from_datastore()
+            with self._lock:
+                speakers = list(self._speakers.values())
+            if not speakers:
+                logger.info("No speakers registered — nothing to prime")
+                return
 
         for delay in BOOT_RETRY_DELAYS:
+            with self._lock:
+                if self._stopped:
+                    return
             logger.info(
                 "Speaker booted — waiting %ds before priming %d speaker(s)...",
                 delay,
@@ -309,6 +392,9 @@ class ZeroConfPrimer:
 
             all_ok = True
             for speaker in speakers:
+                with self._lock:
+                    if self._stopped:
+                        return
                 if not speaker.ip_address:
                     continue
                 if not self._prime_if_needed(speaker):
@@ -322,18 +408,27 @@ class ZeroConfPrimer:
 
     def _schedule_next(self):
         """Schedule the next periodic check."""
-        self._timer = threading.Timer(PERIODIC_CHECK_SECONDS, self._periodic_tick)
-        self._timer.daemon = True
-        self._timer.start()
+        with self._lock:
+            if self._stopped:
+                return
+            timer = threading.Timer(PERIODIC_CHECK_SECONDS, self._periodic_tick)
+            timer.daemon = True
+            self._timer = timer
+        timer.start()
 
     def _periodic_tick(self):
         """Periodic task: check and re-prime all speakers if needed."""
         try:
             logger.info("Periodic Spotify primer check running...")
             with self._lock:
+                if self._stopped:
+                    return
                 speakers = list(self._speakers.values())
 
             for speaker in speakers:
+                with self._lock:
+                    if self._stopped:
+                        return
                 self._prime_if_needed(speaker)
 
             # Remove speakers that have failed too many times in a row.
@@ -358,6 +453,7 @@ class ZeroConfPrimer:
     @staticmethod
     def _send_add_user(speaker_ip: str, user_id: str, token: str) -> dict:
         """Send addUser to the speaker's ZeroConf endpoint."""
+        ZeroConfPrimer._validate_speaker_ip(speaker_ip)
         post_data = urllib.parse.urlencode(
             {
                 "action": "addUser",
@@ -375,13 +471,43 @@ class ZeroConfPrimer:
             headers={"Content-Type": "application/x-www-form-urlencoded"},
         )
 
-        with urllib.request.urlopen(req, timeout=10) as resp:
+        opener = urllib.request.build_opener(
+            urllib.request.ProxyHandler({}),
+            urllib.request.HTTPHandler,
+            _NoRedirectHandler,
+        )
+        with opener.open(req, timeout=10) as resp:
             return json.loads(resp.read())
 
     @staticmethod
     def _get_active_user(speaker_ip: str) -> str:
         """Check the speaker's activeUser via ZeroConf getInfo."""
+        ZeroConfPrimer._validate_speaker_ip(speaker_ip)
         url = f"http://{speaker_ip}:{ZEROCONF_PORT}/zc?action=getInfo"
-        with urllib.request.urlopen(url, timeout=5) as resp:
+        opener = urllib.request.build_opener(
+            urllib.request.ProxyHandler({}),
+            urllib.request.HTTPHandler,
+            _NoRedirectHandler,
+        )
+        with opener.open(url, timeout=5) as resp:
             info = json.loads(resp.read())
         return info.get("activeUser", "")
+
+    @staticmethod
+    def _validate_speaker_ip(speaker_ip: str):
+        address = ipaddress.ip_address(speaker_ip)
+        if (
+            address.version != 4
+            or not address.is_private
+            or address.is_loopback
+            or address.is_link_local
+            or address.is_multicast
+            or address.is_unspecified
+            or address.is_reserved
+        ):
+            raise ValueError("speaker address must be a private IPv4 address")
+
+
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None

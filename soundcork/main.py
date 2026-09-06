@@ -1,3 +1,4 @@
+# Codex: Wire the Spotify ZeroConf primer into server lifecycle and speaker requests.
 import ipaddress
 import json
 import logging
@@ -14,6 +15,7 @@ from fastapi import Depends, FastAPI, HTTPException, Path, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi_etag import Etag
+from starlette.concurrency import run_in_threadpool
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.responses import Response as StarletteResponse
 
@@ -74,6 +76,7 @@ from soundcork.model import (
 from soundcork.ui.speakers import Speakers
 from soundcork.unhandled_exception_handler import NotFoundHandler
 from soundcork.utils import strip_element_text
+from soundcork.zeroconf_primer import ZeroConfPrimer
 
 logging.basicConfig(
     level=logging.INFO,
@@ -89,6 +92,7 @@ from soundcork.speaker_allowlist import SpeakerAllowlist
 from soundcork.spotify_service import SpotifyService
 
 spotify_service = SpotifyService()
+zeroconf_primer = ZeroConfPrimer(spotify_service, datastore, settings)
 
 _speaker_allowlist: SpeakerAllowlist | None = None
 
@@ -114,9 +118,17 @@ async def lifespan(app: FastAPI):
 
     # Initialise speaker allowlist at startup
     get_speaker_allowlist()
+    primer_started = False
+    if settings.zeroconf_primer_enabled:
+        zeroconf_primer.start_periodic()
+        primer_started = True
     logger.info("done starting up server")
-    yield
-    logger.debug("closing server")
+    try:
+        yield
+    finally:
+        if primer_started:
+            zeroconf_primer.stop_periodic()
+        logger.debug("closing server")
 
 
 description = """
@@ -161,6 +173,24 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def register_speakers_middleware(request: Request, call_next):
+    """Register speakers seen on successful marge account/device requests."""
+    response = await call_next(request)
+
+    if settings.zeroconf_primer_enabled and response.status_code < 400:
+        path = request.url.path
+        if path.startswith("/marge/"):
+            match = re.search(r"/account/([^/]+)/device/([^/]+)(?:/|$)", path)
+            if match:
+                account, device = match.groups()
+                if re.fullmatch(ACCOUNT_RE, account) and re.fullmatch(DEVICE_RE, device):
+                    await run_in_threadpool(zeroconf_primer.register_speaker, account, device)
+
+    return response
+
 
 from fastapi.staticfiles import StaticFiles as _StaticFiles
 
@@ -256,6 +286,16 @@ def _parse_ip_literal(value: str) -> str | None:
         return None
 
 
+def _request_client_ip(request: Request) -> str:
+    """Resolve a request IP, trusting only the value appended by a known proxy."""
+    direct_ip = request.client.host if request.client else ""
+    forwarded = request.headers.get("x-forwarded-for", "")
+    trusted_proxies = {ip.strip() for ip in settings.trusted_proxy_ips.split(",") if ip.strip()}
+    if direct_ip in trusted_proxies and forwarded:
+        return _parse_ip_literal(forwarded.rsplit(",", 1)[-1]) or ""
+    return _parse_ip_literal(direct_ip) or ""
+
+
 @app.middleware("http")
 async def speaker_ip_restriction(request: Request, call_next):
     """Block Bose protocol requests from unknown IPs."""
@@ -270,15 +310,7 @@ async def speaker_ip_restriction(request: Request, call_next):
     # the trusted proxy and cannot be injected by clients.
     direct_ip = request.client.host if request.client else ""
     forwarded = request.headers.get("x-forwarded-for", "")
-    client_ip = direct_ip
-
-    trusted_proxies = {ip.strip() for ip in settings.trusted_proxy_ips.split(",") if ip.strip()}
-    if direct_ip in trusted_proxies and forwarded:
-        for part in reversed(forwarded.split(",")):
-            parsed = _parse_ip_literal(part)
-            if parsed:
-                client_ip = parsed
-                break
+    client_ip = _request_client_ip(request)
 
     allowlist = get_speaker_allowlist()
     if not allowlist.is_allowed(client_ip):
@@ -359,14 +391,17 @@ def read_root():
     tags=["marge"],
 )
 async def power_on(request: Request, response: Response) -> Response:
-    # Spotify priming is handled by the on-speaker boot primer
-    # (/mnt/nv/spotify-boot-primer) which fetches a token from
-    # GET /mgmt/spotify/token and primes locally via ZeroConf.
-    # No server-side priming needed.
     logger.info("power_on from %s", request.headers.get("x-forwarded-for", "unknown"))
     xml = await request.body()
-    account = update_device_poweron(datastore, xml)
+    account = await run_in_threadpool(
+        update_device_poweron,
+        datastore,
+        xml,
+        _request_client_ip(request) or None,
+    )
     if account:
+        if settings.zeroconf_primer_enabled:
+            zeroconf_primer.on_power_on()
         response.status_code = HTTPStatus.OK
         return response
     else:
