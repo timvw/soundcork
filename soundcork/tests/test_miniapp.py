@@ -106,8 +106,16 @@ class FailingSpeakers(FakeSpeakers):
     def get_now_playing_status(self, device_id: str):
         raise OSError("speaker unavailable")
 
+
+class IncompleteNowPlayingSpeakers(FakeSpeakers):
     def get_now_playing_and_volume(self, device_id: str, timeout: float):
-        raise OSError("speaker unavailable")
+        now_playing = SimpleNamespace(
+            StationName="",
+            ContentItem=None,
+            ContainerArtUrl="",
+            PlayStatus="STOP_STATE",
+        )
+        return now_playing, self.get_volume(device_id)
 
 
 def make_client(monkeypatch, speakers: FakeSpeakers | None = None, datastore: FakeDatastore | None = None):
@@ -189,6 +197,18 @@ def test_dashboard_isolates_speaker_network_failure(monkeypatch):
     )
 
     assert response.status_code == 200
+    assert f'id="{DEVICE_ID}-info"' in response.text
+    assert "Error loading dashboard data" not in response.text
+
+
+def test_dashboard_isolates_incomplete_now_playing_response(monkeypatch):
+    client, _speakers = make_client(monkeypatch, IncompleteNowPlayingSpeakers())
+
+    response = client.get(
+        "/miniapp/dashboard",
+        headers={"Cookie": f"soundcork_account_id={ACCOUNT_ID}"},
+    )
+
     assert f'id="{DEVICE_ID}-info"' in response.text
     assert "Error loading dashboard data" not in response.text
 

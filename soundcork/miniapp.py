@@ -282,6 +282,17 @@ def get_miniapp_router(datastore: DataStore, speakers: Speakers):
                 loop.run_in_executor(None, fetch_speaker_state),
                 timeout=NOW_PLAYING_TIMEOUT,
             )
+            if np:
+                content_name = np.ContentItem.Name if np.ContentItem else ""
+                return NowPlaying(
+                    f"{np.StationName or content_name}",
+                    np.ContainerArtUrl or "",
+                    np.PlayStatus,
+                    volume.Actual if volume else 0,
+                    volume.Target if volume else 0,
+                    volume.IsMuted if volume else False,
+                )
+            return NowPlaying("", "", "", 0, 0, False)
         except asyncio.TimeoutError:
             logger.warning(f"Timeout getting now playing status for {device_id}")
             return NowPlaying("[Unknown]", "", "", 0, 0, False)
@@ -289,18 +300,6 @@ def get_miniapp_router(datastore: DataStore, speakers: Speakers):
             # Codex: A failed speaker must not hide healthy devices or presets.
             logger.warning(f"Error getting now playing status for {device_id}: {e}")
             return NowPlaying("[Unknown]", "", "", 0, 0, False)
-
-        if np:
-            return NowPlaying(
-                f"{np.StationName or np.ContentItem.Name}",
-                np.ContainerArtUrl or "",
-                np.PlayStatus,
-                volume.Actual if volume else 0,
-                volume.Target if volume else 0,
-                volume.IsMuted if volume else False,
-            )
-        else:
-            return NowPlaying("", "", "", 0, 0, False)
 
     @router.post("/miniapp/select-content-item")
     async def select_content_item(request: Request, selected_device_id: str | None = Query(None)):
