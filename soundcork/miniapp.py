@@ -198,6 +198,11 @@ def get_miniapp_router(datastore: DataStore, speakers: Speakers):
 
             devices: list[dict[str, str]] = []
             presets: list["Preset"] = []
+            try:
+                # Codex: Presets remain available when one device record is invalid.
+                presets = datastore.get_presets(account_id)
+            except Exception as e:
+                logger.warning(f"Error getting presets for account {account_id}: {e}")
 
             now_playing = await asyncio.gather(*(_get_now_playing(device_id) for device_id in my_combined_devices))
 
@@ -224,12 +229,6 @@ def get_miniapp_router(datastore: DataStore, speakers: Speakers):
                             "now_playing_is_muted": str(np.is_muted),
                         }
                     )
-
-                    if not presets:
-                        try:
-                            presets = datastore.get_presets(account_id)
-                        except Exception as e:
-                            logger.warning(f"Error getting presets for device {device_id}: {e}")
 
                 except Exception as e:
                     logger.error(f"Error getting device info for {device_id}: {e}")

@@ -38,12 +38,43 @@ globalThis.WebSocket = FakeWebSocket;
 
 const source = await readFile(new URL("../static/js/soundtouch_websocket.js", import.meta.url), "utf8");
 const moduleUrl = "data:text/javascript;base64," + Buffer.from(source).toString("base64");
-const { connectWebsocket } = await import(moduleUrl);
+const { connectWebsocket, loadSpeakers } = await import(moduleUrl);
 const handler = { connected() {}, updateNowPlaying() {}, updateVolume() {} };
 
 test("blank speaker addresses are isolated", () => {
     assert.equal(connectWebsocket("speaker", "", "Kitchen", handler), null);
     assert.equal(timers.length, 0);
+});
+
+test("speaker loading encodes accounts and skips incomplete devices", async () => {
+    let requestedUrl;
+    globalThis.fetch = async (url) => {
+        requestedUrl = url;
+        return { ok: true, async text() { return "<devices/>"; } };
+    };
+    const device = (id, ip) => ({
+        getAttribute(name) { return name === "deviceid" ? id : null; },
+        getElementsByTagName(name) {
+            const values = { ipaddress: ip, name: "Kitchen" };
+            return values[name] === undefined ? [] : [{ textContent: values[name] }];
+        },
+    });
+    globalThis.DOMParser = class {
+        parseFromString() {
+            return {
+                querySelector() { return null; },
+                getElementsByTagName(name) {
+                    return name === "device" ? [device("speaker", "192.168.1.42"), device("missing-ip", "")] : [];
+                },
+            };
+        }
+    };
+    const instanceCount = FakeWebSocket.instances.length;
+
+    await loadSpeakers("account /", handler);
+
+    assert.equal(requestedUrl, "/marge/streaming/account/account%20%2F/devices");
+    assert.equal(FakeWebSocket.instances.length - instanceCount, 1);
 });
 
 test("closed sockets reconnect with backoff", () => {
@@ -83,4 +114,36 @@ test("page shutdown suppresses new connections", () => {
 
     assert.equal(connectWebsocket("speaker", "192.168.1.42", "Kitchen", handler), null);
     assert.equal(FakeWebSocket.instances.length, instanceCount);
+});
+
+test("miniapp handler removes empty artwork URLs", async () => {
+    const handlerSource = await readFile(new URL("../static/js/miniapp_handler.js", import.meta.url), "utf8");
+    const standaloneSource = handlerSource.replace(
+        'import { SoundTouchHandler, loadSpeakers } from "./soundtouch_websocket.js";',
+        "class SoundTouchHandler {}\nconst loadSpeakers = () => {};",
+    );
+    const image = {
+        src: "/current-page",
+        hidden: false,
+        removeAttribute(name) { if (name === "src") this.src = null; },
+    };
+    globalThis.CSS = { escape(value) { return value; } };
+    globalThis.document = {
+        body: { dataset: {} },
+        querySelector() { return null; },
+        getElementById() {
+            return {
+                querySelector(selector) {
+                    return selector === "img" ? image : null;
+                },
+            };
+        },
+    };
+    const standaloneUrl = "data:text/javascript;base64," + Buffer.from(standaloneSource).toString("base64");
+    const { MiniAppHandler } = await import(standaloneUrl);
+
+    new MiniAppHandler().updateNowPlaying("speaker", "Track", "Artist", "", "", "PLAY_STATE");
+
+    assert.equal(image.src, null);
+    assert.equal(image.hidden, true);
 });

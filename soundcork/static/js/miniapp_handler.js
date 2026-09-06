@@ -20,7 +20,11 @@ export class MiniAppHandler extends SoundTouchHandler {
                 nowPlaying.textContent = track;
             }
             if (image) {
-                image.src = imageUrl;
+                if (imageUrl) {
+                    image.src = imageUrl;
+                } else {
+                    image.removeAttribute("src");
+                }
                 image.hidden = !imageUrl;
             }
         }

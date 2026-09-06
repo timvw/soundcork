@@ -335,6 +335,12 @@ class Speakers:
         # Codex: Split the route budget across both sequential HTTP requests so
         # timed-out executor work cannot occupy shared worker threads indefinitely.
         request_timeout = max(timeout / 2, 0.1)
-        manager = PoolManager(timeout=Timeout(total=request_timeout), num_pools=1, maxsize=1, block=True)
+        manager = PoolManager(
+            timeout=Timeout(total=request_timeout),
+            retries=False,
+            num_pools=1,
+            maxsize=1,
+            block=False,
+        )
         client = SoundTouchClient(cd.st_device, manager=manager)
         return client.GetNowPlayingStatus(), client.GetVolume()
