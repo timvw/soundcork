@@ -285,6 +285,16 @@ def _parse_ip_literal(value: str) -> str | None:
         return None
 
 
+def _request_client_ip(request: Request) -> str:
+    """Resolve a request IP, trusting only the value appended by a known proxy."""
+    direct_ip = request.client.host if request.client else ""
+    forwarded = request.headers.get("x-forwarded-for", "")
+    trusted_proxies = {ip.strip() for ip in settings.trusted_proxy_ips.split(",") if ip.strip()}
+    if direct_ip in trusted_proxies and forwarded:
+        return _parse_ip_literal(forwarded.rsplit(",", 1)[-1]) or ""
+    return _parse_ip_literal(direct_ip) or ""
+
+
 @app.middleware("http")
 async def speaker_ip_restriction(request: Request, call_next):
     """Block Bose protocol requests from unknown IPs."""
@@ -299,15 +309,7 @@ async def speaker_ip_restriction(request: Request, call_next):
     # the trusted proxy and cannot be injected by clients.
     direct_ip = request.client.host if request.client else ""
     forwarded = request.headers.get("x-forwarded-for", "")
-    client_ip = direct_ip
-
-    trusted_proxies = {ip.strip() for ip in settings.trusted_proxy_ips.split(",") if ip.strip()}
-    if direct_ip in trusted_proxies and forwarded:
-        for part in reversed(forwarded.split(",")):
-            parsed = _parse_ip_literal(part)
-            if parsed:
-                client_ip = parsed
-                break
+    client_ip = _request_client_ip(request)
 
     allowlist = get_speaker_allowlist()
     if not allowlist.is_allowed(client_ip):
@@ -390,7 +392,7 @@ def read_root():
 async def power_on(request: Request, response: Response) -> Response:
     logger.info("power_on from %s", request.headers.get("x-forwarded-for", "unknown"))
     xml = await request.body()
-    account = update_device_poweron(datastore, xml)
+    account = update_device_poweron(datastore, xml, _request_client_ip(request) or None)
     if account:
         if settings.zeroconf_primer_enabled:
             zeroconf_primer.on_power_on()

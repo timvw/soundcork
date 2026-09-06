@@ -535,13 +535,19 @@ def remove_device_from_account(datastore: "DataStore", account: str, device: str
 # updates the poweron data for the device represented by the
 # poweron_xml xml. if the device is part of an account, also checks
 # to see if the ip address needs to be updated, and if so, updates it.
-def update_device_poweron(datastore: "DataStore", poweron_xml: bytes) -> str | None:
+def update_device_poweron(
+    datastore: "DataStore",
+    poweron_xml: bytes,
+    observed_ip: str | None = None,
+) -> str | None:
     poweron_elem = ET.fromstring(poweron_xml)
     device = datastore.device_info_from_poweron_xml(poweron_elem)
     current_device, account_id = datastore.find_device(device.device_id)
     if current_device and account_id:
-        if current_device.ip_address != device.ip_address:
-            current_device.ip_address = device.ip_address
+        # The XML body is unauthenticated. Use the network-observed source so a
+        # forged power_on payload cannot redirect Spotify tokens to an attacker.
+        if observed_ip and current_device.ip_address != observed_ip:
+            current_device.ip_address = observed_ip
             datastore.save_device_info(current_device, account_id)
     datastore.save_poweron(device.device_id, poweron_xml.decode())
     return account_id
