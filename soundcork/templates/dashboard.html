@@ -26,7 +26,7 @@
                     {% if ns.selected_device_obj %}
                     {% if ns.selected_device_obj.play_state == "PLAY_STATE" %}
                     <form
-                        action="/miniapp/stop?selected_device_id={{ selected_device_id }}&amp;selected_content_item_id={{ selected_content_item_id }}"
+                        action="/miniapp/stop?selected_device_id={{ selected_device_id }}&amp;selected_content_item_id={{ selected_content_item_id or '' }}"
                         method="post">
                         <button type="submit" class="control-button stop-button">
                             <span aria-hidden="true" class="icon">■</span> Stop

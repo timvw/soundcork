@@ -1,5 +1,7 @@
 // Codex: Isolate failures per speaker and reconnect transient websocket drops.
 const RECONNECT_DELAY_MS = 5000;
+const MAX_RECONNECT_DELAY_MS = 60000;
+const MAX_RECONNECT_ATTEMPTS = 8;
 let pageClosing = false;
 
 window.addEventListener("beforeunload", () => {
@@ -43,8 +45,8 @@ export async function loadSpeakers(accountId, handler) {
     }
 }
 
-export function connectWebsocket(speakerId, ipAddr, name, handler) {
-    if (!ipAddr || pageClosing) {
+export function connectWebsocket(speakerId, ipAddr, name, handler, reconnectAttempt = 0) {
+    if (!ipAddr || pageClosing || window.location.protocol === "https:") {
         return null;
     }
 
@@ -53,11 +55,12 @@ export function connectWebsocket(speakerId, ipAddr, name, handler) {
         websocket = new WebSocket("ws://" + ipAddr + ":8080", "gabbo");
     } catch (error) {
         console.error("Could not connect websocket for " + name, error);
-        scheduleReconnect(speakerId, ipAddr, name, handler);
+        scheduleReconnect(speakerId, ipAddr, name, handler, reconnectAttempt);
         return null;
     }
 
     websocket.addEventListener("open", () => {
+        reconnectAttempt = 0;
         handler.connected(speakerId);
     });
     websocket.addEventListener("message", (event) => {
@@ -88,14 +91,18 @@ export function connectWebsocket(speakerId, ipAddr, name, handler) {
         websocket.close();
     });
     websocket.addEventListener("close", () => {
-        scheduleReconnect(speakerId, ipAddr, name, handler);
+        scheduleReconnect(speakerId, ipAddr, name, handler, reconnectAttempt);
     });
     return websocket;
 }
 
-function scheduleReconnect(speakerId, ipAddr, name, handler) {
-    if (!pageClosing) {
-        setTimeout(() => connectWebsocket(speakerId, ipAddr, name, handler), RECONNECT_DELAY_MS);
+function scheduleReconnect(speakerId, ipAddr, name, handler, reconnectAttempt) {
+    if (!pageClosing && reconnectAttempt < MAX_RECONNECT_ATTEMPTS) {
+        const delay = Math.min(RECONNECT_DELAY_MS * (2 ** reconnectAttempt), MAX_RECONNECT_DELAY_MS);
+        setTimeout(
+            () => connectWebsocket(speakerId, ipAddr, name, handler, reconnectAttempt + 1),
+            delay,
+        );
     }
 }
 

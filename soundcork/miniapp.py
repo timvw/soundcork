@@ -4,6 +4,7 @@ Endpoints for a miniapp UI.
 
 import asyncio
 import logging
+import os
 import urllib.parse
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
@@ -58,7 +59,8 @@ def get_device_image(product_code: str) -> str:
 
 
 def get_miniapp_router(datastore: DataStore, speakers: Speakers):
-    templates = Jinja2Templates(directory="templates")
+    # Codex: Resolve templates independently of the process working directory.
+    templates = Jinja2Templates(directory=os.path.join(os.path.dirname(__file__), "templates"))
 
     router = APIRouter(tags=["miniapp"])
 
@@ -197,12 +199,12 @@ def get_miniapp_router(datastore: DataStore, speakers: Speakers):
             devices: list[dict[str, str]] = []
             presets: list["Preset"] = []
 
-            for device_id in my_combined_devices.keys():
+            now_playing = await asyncio.gather(*(_get_now_playing(device_id) for device_id in my_combined_devices))
+
+            for device_id, np in zip(my_combined_devices, now_playing, strict=True):
                 try:
                     if stopped and device_id == selected_device_id:
                         np = NowPlaying("", "", "", 0, 0, False)
-                    else:
-                        np = await _get_now_playing(device_id)
                     online = "offline"
                     cd = my_combined_devices[device_id]
                     device_info = datastore.get_device_info(account_id, device_id)
@@ -271,12 +273,17 @@ def get_miniapp_router(datastore: DataStore, speakers: Speakers):
     async def _get_now_playing(device_id) -> NowPlaying:
         """Get now_playing info for a device"""
         loop = asyncio.get_event_loop()
+
+        def fetch_speaker_state():
+            # Codex: Keep both blocking speaker calls off the ASGI event loop.
+            return (
+                speakers.get_now_playing_status(device_id=device_id),
+                speakers.get_volume(device_id),
+            )
+
         try:
-            np = await asyncio.wait_for(
-                loop.run_in_executor(
-                    None,
-                    lambda: speakers.get_now_playing_status(device_id=device_id),
-                ),
+            np, volume = await asyncio.wait_for(
+                loop.run_in_executor(None, fetch_speaker_state),
                 timeout=NOW_PLAYING_TIMEOUT,
             )
         except asyncio.TimeoutError:
@@ -284,7 +291,6 @@ def get_miniapp_router(datastore: DataStore, speakers: Speakers):
             return NowPlaying("[Unknown]", "", "", 0, 0, False)
 
         if np:
-            volume = speakers.get_volume(device_id)
             return NowPlaying(
                 f"{np.StationName or np.ContentItem.Name}",
                 np.ContainerArtUrl or "",
