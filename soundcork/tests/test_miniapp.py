@@ -53,6 +53,11 @@ class FakeDatastore:
         ]
 
 
+class BrokenDeviceDatastore(FakeDatastore):
+    def get_device_info(self, account_id: str, device_id: str):
+        raise ValueError("invalid device record")
+
+
 class FakeSpeakers:
     # Codex: Keep this fake complete enough to exercise dashboard rendering.
     def __init__(self, play_result: bool = True, online: bool = True) -> None:
@@ -105,10 +110,10 @@ class FailingSpeakers(FakeSpeakers):
         raise OSError("speaker unavailable")
 
 
-def make_client(monkeypatch, speakers: FakeSpeakers | None = None):
+def make_client(monkeypatch, speakers: FakeSpeakers | None = None, datastore: FakeDatastore | None = None):
     app = FastAPI()
     fake_speakers = speakers or FakeSpeakers()
-    app.include_router(get_miniapp_router(cast(Any, FakeDatastore()), cast(Any, fake_speakers)))
+    app.include_router(get_miniapp_router(cast(Any, datastore or FakeDatastore()), cast(Any, fake_speakers)))
     return TestClient(app), fake_speakers
 
 
@@ -198,6 +203,17 @@ def test_dashboard_url_encodes_selected_ids(monkeypatch):
 
     assert "selected_device_id=device%26%2B%20%23" in response.text
     assert "selected_content_item_id=item%26%2B%20%23" in response.text
+
+
+def test_dashboard_keeps_presets_when_device_record_is_invalid(monkeypatch):
+    client, _speakers = make_client(monkeypatch, datastore=BrokenDeviceDatastore())
+
+    response = client.get(
+        "/miniapp/dashboard",
+        headers={"Cookie": f"soundcork_account_id={ACCOUNT_ID}"},
+    )
+
+    assert "Rádio Proglas" in response.text
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="Node.js is unavailable")

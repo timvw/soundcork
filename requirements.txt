@@ -15,5 +15,7 @@ scp==0.15.0
 telnetlib3==4.0.2
 types-paramiko==4.0.0.20260518
 upnpclient==2.0.3
+# Codex: Direct dependency for bounded speaker HTTP requests.
+urllib3==2.7.0
 websockets==14.2
 yt-dlp>=2025.1.0
