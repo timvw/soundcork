@@ -97,6 +97,7 @@ def test_power_on_notifies_primer(monkeypatch):
     monkeypatch.setattr(main, "update_device_poweron", MagicMock(return_value="1234567"))
     request = SimpleNamespace(
         headers={"x-forwarded-for": "192.168.1.42, 10.0.0.1"},
+        client=SimpleNamespace(host="192.168.1.42"),
         body=AsyncMock(return_value=b"<info/>"),
     )
     response = main.Response()
@@ -112,7 +113,11 @@ def test_power_on_leaves_disabled_primer_stopped(monkeypatch):
     monkeypatch.setattr(main, "zeroconf_primer", primer)
     monkeypatch.setattr(main.settings, "zeroconf_primer_enabled", False)
     monkeypatch.setattr(main, "update_device_poweron", MagicMock(return_value="1234567"))
-    request = SimpleNamespace(headers={}, body=AsyncMock(return_value=b"<info/>"))
+    request = SimpleNamespace(
+        headers={},
+        client=SimpleNamespace(host="192.168.1.42"),
+        body=AsyncMock(return_value=b"<info/>"),
+    )
 
     result = asyncio.run(main.power_on(request, main.Response()))
 
