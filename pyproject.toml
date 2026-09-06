@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "soundcork"
-version = "1.0.1"
+version = "1.0"
 
 description = "A replacement server for Bose SoundTouch devices."
 readme = "README.md"
@@ -39,6 +39,7 @@ select = ["E", "F", "W", "I"]
 known-first-party = ["soundcork"]
 
 [tool.ruff.format]
+# Codex: Keep source formatting from rewriting illustrative Markdown snippets.
 exclude = ["docs/**/*.md"]
 
 [tool.pytest.ini_options]
