@@ -6,11 +6,11 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Soundcork Dashboard</title>
     <link rel="stylesheet" href="/static/css/main.css">
-    <script src="https://code.jquery.com/jquery-4.0.0.min.js" integrity="sha256-OaVG6prZf4v69dPg6PhVattBXkcOWQB62pdZ3ORyrao=" crossorigin="anonymous"></script>
     <script type="module" src="../static/js/miniapp_handler.js"></script>
 </head>
 
-<body>
+<!-- Codex: Expose only the account identifier needed by the websocket loader. -->
+<body data-account-id="{{ account_id }}">
     <div class="left-sidebar-grid">
         <a href="#main" class="skip-link">Skip to main content</a>
 
@@ -99,7 +99,7 @@
                             method="post" style="display:contents;">
                             <input type="hidden" name="device_id" value="{{ device.device_id }}">
                             <input type="hidden" name="device_name" value="{{ device.name }}">
-                            <button type="submit" {% if device.status=='offline' %} disabled aria-disabled="true" {%
+                            <button type="submit" {% if device.online_status=='offline' %} disabled aria-disabled="true" {%
                                 endif %}>
                                 <img src="/static/images/devices/{{ device.image_file }}" alt="" class="device-image">
                                 <div id="{{device.device_id}}-info" class="device-info">
@@ -128,16 +128,13 @@
             <div class="device-info" id="sidebar-{{ns.selected_device_obj.device_id}}">
                 {% if ns.selected_device_obj %}
                 Selected speaker: {{ ns.selected_device_obj.name }}
-                {% if ns.selected_device_obj.now_playing and ns.selected_device_obj.play_state == "PLAY_STATE" %}
                 <p>Now Playing on {{ ns.selected_device_obj.name }}:<br>
                     <span class="now_playing">{{ ns.selected_device_obj.now_playing }}</span></p>
-                {% if ns.selected_device_obj.now_playing_image %}
-                <img alt="" src="{{  ns.selected_device_obj.now_playing_image }}" width=100px;>
-                {% endif %}
+                <img alt="" src="{{ ns.selected_device_obj.now_playing_image }}" width="100" {% if not
+                    ns.selected_device_obj.now_playing_image %}hidden{% endif %}>
                 {# TODO: right now this is read-only #}
-                <p><input type="range" min="1" max="100" value={{ ns.selected_device_obj.now_playing_volume }}
+                <p><input type="range" min="1" max="100" value="{{ ns.selected_device_obj.now_playing_volume }}"
                         class="slider" id="volume"></p>
-                {% endif %}
                 {% else %}
                 No speaker selected.
                 {% endif %}
@@ -145,8 +142,8 @@
             <div class="content-item-info">
                 {% if ns.selected_preset_obj %}
                 Selected audio source: {{ ns.selected_preset_obj.name }}
-                {% if ns.selected_preset_obj.now_playing_image %}
-                <img alt="" src="{{  ns.selected_preset_obj.container_art }}" width=100px;>
+                {% if ns.selected_preset_obj.container_art %}
+                <img alt="" src="{{ ns.selected_preset_obj.container_art }}" width="100">
                 {% endif %}
                 {% else %}
                 No preset selected.

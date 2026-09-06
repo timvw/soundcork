@@ -51,15 +51,17 @@ class FakeDatastore:
 
 
 class FakeSpeakers:
-    def __init__(self, play_result: bool = True) -> None:
+    # Codex: Keep this fake complete enough to exercise dashboard rendering.
+    def __init__(self, play_result: bool = True, online: bool = True) -> None:
         self.play_result = play_result
+        self.online = online
         self.play_calls: list[tuple[str, str]] = []
 
     def all_devices(self):
         return {
             DEVICE_ID: SimpleNamespace(
                 account=ACCOUNT_ID,
-                online=True,
+                online=self.online,
                 in_soundcork=True,
                 marge_server="Soundcork",
             )
@@ -68,6 +70,19 @@ class FakeSpeakers:
     def play_content_item(self, device_id: str, content_item_id: str) -> bool:
         self.play_calls.append((device_id, content_item_id))
         return self.play_result
+
+    def get_now_playing_status(self, device_id: str):
+        assert device_id == DEVICE_ID
+        return SimpleNamespace(
+            StationName="Rádio Proglas",
+            ContentItem=SimpleNamespace(Name="Rádio Proglas"),
+            ContainerArtUrl="/art.png",
+            PlayStatus="PLAY_STATE",
+        )
+
+    def get_volume(self, device_id: str):
+        assert device_id == DEVICE_ID
+        return SimpleNamespace(Actual=25, Target=25, IsMuted=False)
 
 
 def make_client(monkeypatch, speakers: FakeSpeakers | None = None):
@@ -94,3 +109,46 @@ def test_dashboard_decodes_display_cookies(monkeypatch):
 
     assert response.status_code == 200
     assert "Účet ložnice" in response.text
+    assert f'data-account-id="{ACCOUNT_ID}"' in response.text
+    assert f'id="{DEVICE_ID}-info"' in response.text
+    assert "code.jquery.com" not in response.text
+
+
+def test_dashboard_disables_offline_device(monkeypatch):
+    client, _speakers = make_client(monkeypatch, FakeSpeakers(online=False))
+
+    response = client.get(
+        "/miniapp/dashboard",
+        headers={"Cookie": f"soundcork_account_id={ACCOUNT_ID}"},
+    )
+
+    assert response.status_code == 200
+    assert 'disabled aria-disabled="true"' in response.text
+
+
+def test_account_cookie_is_http_only(monkeypatch):
+    client, _speakers = make_client(monkeypatch)
+
+    response = client.post(
+        "/miniapp/login",
+        data={"account_id": ACCOUNT_ID},
+        follow_redirects=False,
+    )
+
+    account_cookie = next(
+        header for header in set_cookie_headers(response) if header.startswith("soundcork_account_id=")
+    )
+    assert "HttpOnly" in account_cookie
+
+
+def test_websocket_client_has_offline_safe_lifecycle():
+    # Codex: Static contract for the dependency-free browser module.
+    js = (Path(__file__).resolve().parents[1] / "static/js/soundtouch_websocket.js").read_text()
+    handler = (Path(__file__).resolve().parents[1] / "static/js/miniapp_handler.js").read_text()
+
+    assert "cookieStore" not in handler
+    assert "document.body.dataset.accountId" in handler
+    assert "setTimeout" in js
+    assert 'addEventListener("close"' in js
+    assert "textContent" in js
+    assert "$." not in js
