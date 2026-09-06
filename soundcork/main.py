@@ -74,6 +74,7 @@ from soundcork.model import (
 from soundcork.ui.speakers import Speakers
 from soundcork.unhandled_exception_handler import NotFoundHandler
 from soundcork.utils import strip_element_text
+from soundcork.zeroconf_primer import ZeroConfPrimer
 
 logging.basicConfig(
     level=logging.INFO,
@@ -89,6 +90,7 @@ from soundcork.speaker_allowlist import SpeakerAllowlist
 from soundcork.spotify_service import SpotifyService
 
 spotify_service = SpotifyService()
+zeroconf_primer = ZeroConfPrimer(spotify_service, datastore, settings)
 
 _speaker_allowlist: SpeakerAllowlist | None = None
 
@@ -114,9 +116,15 @@ async def lifespan(app: FastAPI):
 
     # Initialise speaker allowlist at startup
     get_speaker_allowlist()
+    if settings.zeroconf_primer_enabled:
+        zeroconf_primer.start_periodic()
     logger.info("done starting up server")
-    yield
-    logger.debug("closing server")
+    try:
+        yield
+    finally:
+        if settings.zeroconf_primer_enabled:
+            zeroconf_primer.stop_periodic()
+        logger.debug("closing server")
 
 
 description = """
@@ -161,6 +169,22 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def register_speakers_middleware(request: Request, call_next):
+    """Register speakers seen on successful marge account/device requests."""
+    response = await call_next(request)
+
+    if settings.zeroconf_primer_enabled and response.status_code < 400:
+        path = request.url.path
+        if path.startswith("/marge/"):
+            match = re.search(r"/account/([^/]+)/device/([^/]+)(?:/|$)", path)
+            if match:
+                zeroconf_primer.register_speaker(match.group(1), match.group(2))
+
+    return response
+
 
 from fastapi.staticfiles import StaticFiles as _StaticFiles
 
@@ -359,14 +383,13 @@ def read_root():
     tags=["marge"],
 )
 async def power_on(request: Request, response: Response) -> Response:
-    # Spotify priming is handled by the on-speaker boot primer
-    # (/mnt/nv/spotify-boot-primer) which fetches a token from
-    # GET /mgmt/spotify/token and primes locally via ZeroConf.
-    # No server-side priming needed.
     logger.info("power_on from %s", request.headers.get("x-forwarded-for", "unknown"))
     xml = await request.body()
     account = update_device_poweron(datastore, xml)
     if account:
+        if settings.zeroconf_primer_enabled:
+            source_ip = request.headers.get("x-forwarded-for", "").split(",")[0].strip() or None
+            zeroconf_primer.on_power_on(source_ip)
         response.status_code = HTTPStatus.OK
         return response
     else:
