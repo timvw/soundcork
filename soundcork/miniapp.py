@@ -276,10 +276,7 @@ def get_miniapp_router(datastore: DataStore, speakers: Speakers):
 
         def fetch_speaker_state():
             # Codex: Keep both blocking speaker calls off the ASGI event loop.
-            return (
-                speakers.get_now_playing_status(device_id=device_id),
-                speakers.get_volume(device_id),
-            )
+            return speakers.get_now_playing_and_volume(device_id, NOW_PLAYING_TIMEOUT)
 
         try:
             np, volume = await asyncio.wait_for(
@@ -288,6 +285,10 @@ def get_miniapp_router(datastore: DataStore, speakers: Speakers):
             )
         except asyncio.TimeoutError:
             logger.warning(f"Timeout getting now playing status for {device_id}")
+            return NowPlaying("[Unknown]", "", "", 0, 0, False)
+        except Exception as e:
+            # Codex: A failed speaker must not hide healthy devices or presets.
+            logger.warning(f"Error getting now playing status for {device_id}: {e}")
             return NowPlaying("[Unknown]", "", "", 0, 0, False)
 
         if np:

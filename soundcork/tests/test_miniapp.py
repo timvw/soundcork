@@ -59,6 +59,7 @@ class FakeSpeakers:
         self.play_result = play_result
         self.online = online
         self.play_calls: list[tuple[str, str]] = []
+        self.stop_calls: list[str] = []
 
     def all_devices(self):
         return {
@@ -87,6 +88,22 @@ class FakeSpeakers:
         assert device_id == DEVICE_ID
         return SimpleNamespace(Actual=25, Target=25, IsMuted=False)
 
+    def get_now_playing_and_volume(self, device_id: str, timeout: float):
+        assert timeout > 0
+        return self.get_now_playing_status(device_id), self.get_volume(device_id)
+
+    def stop_playback(self, device_id: str) -> bool:
+        self.stop_calls.append(device_id)
+        return True
+
+
+class FailingSpeakers(FakeSpeakers):
+    def get_now_playing_status(self, device_id: str):
+        raise OSError("speaker unavailable")
+
+    def get_now_playing_and_volume(self, device_id: str, timeout: float):
+        raise OSError("speaker unavailable")
+
 
 def make_client(monkeypatch, speakers: FakeSpeakers | None = None):
     app = FastAPI()
@@ -114,6 +131,8 @@ def test_dashboard_decodes_display_cookies(monkeypatch):
     assert f'data-account-id="{ACCOUNT_ID}"' in response.text
     assert f'id="{DEVICE_ID}-info"' in response.text
     assert "code.jquery.com" not in response.text
+    assert 'src="/static/js/miniapp_handler.js"' in response.text
+    assert 'id="sidebar-"' not in response.text
 
 
 def test_dashboard_disables_offline_device(monkeypatch):
@@ -144,14 +163,41 @@ def test_account_cookie_is_http_only(monkeypatch):
 
 
 def test_stop_url_omits_none_content_item(monkeypatch):
-    client, _speakers = make_client(monkeypatch)
+    client, speakers = make_client(monkeypatch)
+
+    response = client.post(
+        f"/miniapp/stop?selected_device_id={DEVICE_ID}",
+        headers={"Cookie": f"soundcork_account_id={ACCOUNT_ID}"},
+        follow_redirects=False,
+    )
+
+    assert response.headers["location"] == f"/miniapp/dashboard?selected_device_id={DEVICE_ID}&stopped=true"
+    assert speakers.stop_calls == [DEVICE_ID]
+
+
+def test_dashboard_isolates_speaker_network_failure(monkeypatch):
+    client, _speakers = make_client(monkeypatch, FailingSpeakers())
 
     response = client.get(
-        f"/miniapp/dashboard?selected_device_id={DEVICE_ID}",
+        "/miniapp/dashboard",
         headers={"Cookie": f"soundcork_account_id={ACCOUNT_ID}"},
     )
 
-    assert "selected_content_item_id=None" not in response.text
+    assert response.status_code == 200
+    assert f'id="{DEVICE_ID}-info"' in response.text
+    assert "Error loading dashboard data" not in response.text
+
+
+def test_dashboard_url_encodes_selected_ids(monkeypatch):
+    client, _speakers = make_client(monkeypatch)
+
+    response = client.get(
+        "/miniapp/dashboard?selected_device_id=device%26%2B%20%23&selected_content_item_id=item%26%2B%20%23",
+        headers={"Cookie": f"soundcork_account_id={ACCOUNT_ID}"},
+    )
+
+    assert "selected_device_id=device%26%2B%20%23" in response.text
+    assert "selected_content_item_id=item%26%2B%20%23" in response.text
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="Node.js is unavailable")
