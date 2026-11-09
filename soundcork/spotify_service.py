@@ -4,6 +4,8 @@ Handles the authorization code flow, token management, and entity
 resolution for the ueberboese-app's Spotify features.
 """
 
+# Codex: Provide concurrency-safe access tokens with their real expiry metadata.
+
 import asyncio
 import json
 import logging

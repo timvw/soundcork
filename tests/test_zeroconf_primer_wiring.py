@@ -1,5 +1,7 @@
 """Regression tests for the server-side Spotify ZeroConf primer wiring."""
 
+# Codex: Pin the server integration and request-triggered primer behavior.
+
 import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock

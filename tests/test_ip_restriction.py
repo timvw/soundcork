@@ -1,5 +1,7 @@
 """Tests for IP restriction on Bose protocol endpoints and webui SSRF hardening."""
 
+# Codex: Cover trusted-proxy handling used by primer registration middleware.
+
 from unittest.mock import MagicMock, patch
 
 import pytest

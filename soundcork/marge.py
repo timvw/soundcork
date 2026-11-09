@@ -1,3 +1,4 @@
+# Codex: Notify the primer when an observed speaker powers on.
 import logging
 import time
 import urllib.request
