@@ -170,6 +170,13 @@ Change all 4 server URLs to point to your SoundCork instance:
 Reboot the speaker for changes to take effect. The speaker will now send all
 cloud traffic to your SoundCork server.
 
+<!-- Claude: Warn about IP-based server URLs breaking the derived OAuth host. -->
+> **Prefer a hostname over an IP address.** The speaker derives its Spotify
+> OAuth host from the marge URL by inserting `oauth` into the host name, so an
+> IP such as `192.168.1.10` turns into the unresolvable `192oauth.168.1.10`.
+> See [OAuth Token Intercept](spotify.md#oauth-token-intercept-ongoing-refresh)
+> for the symptoms and a workaround.
+
 ## Step 4: Harden SSH Access (Recommended)
 
 By default, SSH uses passwordless root access. Anyone on your network can log in.
@@ -522,3 +529,41 @@ spotify-watchdog[1820]: ZeroConf stuck but speaker is playing non-Spotify audio 
 > **Read-only filesystem**: The speaker's root filesystem is read-only by
 > default. Always run `rw` before editing files. The filesystem reverts to
 > read-only on reboot.
+
+<!-- Claude: Troubleshooting notes found while debugging presets on two SoundTouch 10 speakers. -->
+## Troubleshooting
+
+### Clock stuck at July 2015 after boot
+
+The speaker has no battery-backed clock. It boots at a fixed date (July 2015)
+and `APServer` then sets the time over NTP. That NTP step sometimes fails at
+boot (`NTPClient:WARNING]Unable to resolve NTP Server` in `logread`) even though
+DNS works, and the clock stays in 2015. Check with `date` over SSH.
+
+A wrong clock can break HTTPS calls from the speaker. The speaker's busybox
+includes `ntpd`, so `/mnt/nv/rc.local` can set the time once the network is up:
+
+```sh
+( n=0; while [ $n -lt 60 ]; do
+    busybox ntpd -n -q -p pool.ntp.org >/dev/null 2>&1 && break
+    n=$((n+1)); sleep 5
+  done ) &
+```
+
+### SoundCork in Docker on macOS can't reach the speakers
+
+SoundCork needs to reach the speakers (port 8090 for the Web UI and admin,
+port 8200 for the ZeroConf primer). With [Colima](https://github.com/abiosoft/colima)
+started from `brew services` (launchd), macOS's Local Network privacy can
+silently block the VM's user-mode networking from reaching LAN hosts, while
+the Mac itself can. Containers then get `Connection refused` for every LAN
+address (speakers and router), but internet access still works.
+
+With the `vz` VM type, give the VM its own NAT address and route through it in
+`~/.colima/default/colima.yaml`, then restart Colima:
+
+```yaml
+network:
+  address: true
+  preferredRoute: true
+```

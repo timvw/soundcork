@@ -58,7 +58,19 @@ Once the speaker has an active Spotify session (from the ZeroConf primer or a pr
 3. Returns a fresh access token as JSON
 4. The speaker uses this token for continued Spotify playback
 
-This is transparent — the speaker manages its own refresh cycle, just like it did with `streamingoauth.bose.com`. No extra DNS configuration needed — the speaker already sends these requests to the same server as marge.
+This is transparent — the speaker manages its own refresh cycle, just like it did with `streamingoauth.bose.com`. The speaker sends these requests to the marge server, but to a hostname it derives from `margeServerUrl` by inserting `oauth` before the first dot of the host (`streaming.bose.com` → `streamingoauth.bose.com`).
+
+<!-- Claude: Document the derived OAuth host and the IP-address pitfall. -->
+**If `margeServerUrl` is an IP address**, the derived host can't be resolved: `http://192.168.1.10:8000` becomes `http://192oauth.168.1.10:8000`. The token request fails with a DNS error (`URL Fetch (...) failed with CURL ErrorCode 6` in the speaker log). The most visible symptom shows up when the speaker's Spotify shuffle is on: playlist and album presets hang in `BUFFERING`, because the speaker needs this token to pick a random start track (`PlayRandomIndexForUri`). Single-track presets and non-shuffled playlists still play. To fix it, either:
+
+- use a hostname for `margeServerUrl` and make both names resolve to soundcork (e.g. `soundcork.lan` and `soundcorkoauth.lan`), or
+- map the derived name on the speaker at boot, in `/mnt/nv/rc.local`. The root filesystem stays read-only and the mapping is reapplied on every boot:
+
+  ```sh
+  if ! grep -q "192oauth.168.1.10" /etc/hosts; then
+      cp /etc/hosts /tmp/hosts && echo "192.168.1.10	192oauth.168.1.10" >> /tmp/hosts && mount -o bind /tmp/hosts /etc/hosts
+  fi
+  ```
 
 ## Setup
 
@@ -81,20 +93,28 @@ SPOTIFY_CLIENT_SECRET=your-client-secret
 
 ### Step 3: Link Your Spotify Account
 
-Using the management API:
+The redirect URI used in the flow must exactly match one registered in your Spotify app. Spotify only accepts HTTPS redirect URIs, except loopback addresses (`http://127.0.0.1:PORT/...`; `localhost` is not accepted).
+
+**In a browser:** open `https://your-soundcork/mgmt/spotify/init` (this is what the Web UI does). It redirects to Spotify with `{BASE_URL}/mgmt/spotify/callback` as the redirect URI and completes the flow on the server, so that URI must be registered and reachable from your browser.
+
+**With the management API**, using `SPOTIFY_REDIRECT_URI` as the redirect URI:
 
 ```bash
-# Start the OAuth flow
-curl -u admin:password https://your-soundcork/mgmt/spotify/auth/init
+# Start the OAuth flow — returns {"redirectUrl": "..."}
+curl -u admin:password -X POST https://your-soundcork/mgmt/spotify/init
 
-# Open the returned URL in your browser, authorize, then complete:
-curl -u admin:password "https://your-soundcork/mgmt/spotify/auth/callback?code=AUTH_CODE"
+# Open redirectUrl in a browser and authorize. Spotify redirects to
+# SPOTIFY_REDIRECT_URI?code=AUTH_CODE — copy the code from the address bar
+# (the page itself doesn't need to load), then:
+curl -u admin:password -X POST "https://your-soundcork/mgmt/spotify/confirm?code=AUTH_CODE"
 
 # Verify the account is linked
 curl -u admin:password https://your-soundcork/mgmt/spotify/accounts
 ```
 
 Or use the [companion app](https://github.com/timvw/ueberboese-app) which handles this flow automatically.
+
+Linking again replaces the stored tokens for the same Spotify user.
 
 ### Step 4: Verify
 
@@ -111,6 +131,8 @@ After linking your Spotify account:
 - The speaker's firmware requests a new token via the OAuth endpoint before expiry
 - The ZeroConf primer re-primes every **45 minutes** as an additional safety net
 - Soundcork caches tokens to avoid unnecessary Spotify API calls
+- Refresh tokens expire too. The Spotify dashboard shows each app's **Refresh Token Lifetime** (for example 180 days). When it runs out, soundcork logs `Spotify token refresh failed: {"error":"invalid_grant","error_description":"Refresh token revoked"}`, `/mgmt/spotify/token` returns 503, and speakers lose Spotify presets after their next reboot. Link the account again ([Step 3](#step-3-link-your-spotify-account)).
+- Spotify allows one stream per account. If several speakers use the same Spotify account, starting playback on one stops the other after a few seconds.
 
 ### What `cs3` / `token_version_3` Means
 
