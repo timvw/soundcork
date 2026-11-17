@@ -13,7 +13,13 @@ from soundcork.model import DeviceInfo
 from soundcork.speaker_allowlist import SpeakerAllowlist
 
 SPEAKER_IP = "192.168.1.143"
-INHERITED = ("response_class", "response_model", "status_code", "response_model_exclude_none")
+INHERITED = (
+    "response_class",
+    "response_model",
+    "status_code",
+    "response_model_exclude_none",
+    "dependencies",
+)
 
 
 def _routes() -> list[APIRoute]:
@@ -79,3 +85,15 @@ def test_alias_serves_bose_xml_not_json_string(speaker_client):
     assert alias.headers["content-type"].startswith("application/vnd.bose.streaming")
     assert alias.text == canonical.text
     assert alias.text.startswith("<?xml")
+
+
+# Claude: Aliases must also inherit the canonical route's ETag dependency.
+def test_alias_serves_etag_and_honours_if_none_match(speaker_client):
+    path = "/streaming/software/update/account/1234567"
+    canonical = speaker_client.get("/marge" + path)
+    alias = speaker_client.get(path)
+
+    assert alias.headers["etag"] == canonical.headers["etag"]
+
+    not_modified = speaker_client.get(path, headers={"If-None-Match": alias.headers["etag"]})
+    assert not_modified.status_code == 304

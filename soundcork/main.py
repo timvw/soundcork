@@ -1749,7 +1749,12 @@ def _add_alias(
     methods: list[str],
     tags: list[str],
 ) -> None:
-    """Register ``path`` as an alias of the route already serving ``endpoint``."""
+    """Register ``path`` as an alias of the route already serving ``endpoint``.
+
+    The first route registered for ``endpoint`` is treated as canonical, so an
+    endpoint served by several canonical routes must give them all the same
+    response settings and dependencies.
+    """
     canonical = next(
         (r for r in app.router.routes if isinstance(r, APIRoute) and r.endpoint is endpoint),
         None,
@@ -1765,6 +1770,8 @@ def _add_alias(
         response_class=canonical.response_class,
         status_code=canonical.status_code,
         response_model_exclude_none=canonical.response_model_exclude_none,
+        # Claude: Route-level dependencies carry the ETag / If-None-Match handling.
+        dependencies=canonical.dependencies,
     )
 
 
