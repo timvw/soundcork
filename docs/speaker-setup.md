@@ -533,6 +533,8 @@ spotify-watchdog[1820]: ZeroConf stuck but speaker is playing non-Spotify audio 
 <!-- Claude: Troubleshooting notes found while debugging presets on two SoundTouch 10 speakers. -->
 ## Troubleshooting
 
+These notes were observed on SoundTouch 10 speakers with firmware 27.0.6.
+
 ### Clock stuck at July 2015 after boot
 
 The speaker has no battery-backed clock. It boots at a fixed date (July 2015)
