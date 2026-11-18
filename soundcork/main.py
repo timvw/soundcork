@@ -9,11 +9,12 @@ import xml.etree.ElementTree as ET
 from contextlib import asynccontextmanager
 from datetime import datetime
 from http import HTTPStatus
-from typing import Annotated
+from typing import Annotated, Any, Callable
 
 from fastapi import Depends, FastAPI, HTTPException, Path, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, StreamingResponse
+from fastapi.routing import APIRoute
 from fastapi_etag import Etag
 from starlette.concurrency import run_in_threadpool
 from starlette.exceptions import HTTPException as StarletteHTTPException
@@ -1733,48 +1734,86 @@ def bose_xml_str(xml: ET.Element) -> str:
 # the /marge path segment.
 #
 # We use FastAPI's add_api_route to point the alias paths at the same
-# handler functions already defined above.
+# handler functions already defined above.  Aliases must be registered
+# through _add_alias so they inherit the canonical route's response
+# settings — a bare add_api_route falls back to JSONResponse and sends the
+# speaker a JSON-quoted XML string instead of Bose XML.
 ##############################################################################
 
+
+# Claude: Register aliases so they inherit the canonical route's response settings.
+def _add_alias(
+    path: str,
+    endpoint: Callable[..., Any],
+    *,
+    methods: list[str],
+    tags: list[str],
+) -> None:
+    """Register ``path`` as an alias of the route already serving ``endpoint``.
+
+    The first route registered for ``endpoint`` is treated as canonical, so an
+    endpoint served by several canonical routes must give them all the same
+    response settings and dependencies.
+    """
+    canonical = next(
+        (r for r in app.router.routes if isinstance(r, APIRoute) and r.endpoint is endpoint),
+        None,
+    )
+    if canonical is None:
+        raise RuntimeError(f"alias {path!r}: no canonical route registered for {endpoint.__name__}")
+    app.add_api_route(
+        path,
+        endpoint,
+        methods=methods,
+        tags=tags,
+        response_model=canonical.response_model,
+        response_class=canonical.response_class,
+        status_code=canonical.status_code,
+        response_model_exclude_none=canonical.response_model_exclude_none,
+        # Claude: Route-level dependencies carry the ETag / If-None-Match handling.
+        dependencies=canonical.dependencies,
+    )
+
+
 # --- BMX root-level aliases ---
-app.add_api_route("/registry/v1/services", bmx_services, methods=["GET"], tags=["bmx-alias"])
-app.add_api_route(
+_add_alias("/registry/v1/services", bmx_services, methods=["GET"], tags=["bmx-alias"])
+_add_alias(
     "/tunein/v1/playback/station/{station_id}",
     bmx_playback,
     methods=["GET"],
     tags=["bmx-alias"],
 )
-app.add_api_route(
+_add_alias(
     "/tunein/v1/playback/episodes/{episode_id}",
     bmx_podcast_info,
     methods=["GET"],
     tags=["bmx-alias"],
 )
-app.add_api_route(
+_add_alias(
     "/tunein/v1/playback/episode/{episode_id}",
     bmx_playback_podcast,
     methods=["GET"],
     tags=["bmx-alias"],
 )
-app.add_api_route(
+_add_alias(
     "/radiobrowser/v1/playback/station/{station_id}",
     bmx_radiobrowser_playback,
     methods=["GET"],
     tags=["bmx-alias"],
 )
-app.add_api_route(
+_add_alias(
     "/radiobrowser/v1/report",
     bmx_radiobrowser_report,
     methods=["POST"],
     tags=["bmx-alias"],
 )
-app.add_api_route(
+_add_alias(
     "/radiobrowser/v1/transcode/{station_id}",
     bmx_radiobrowser_transcode,
     methods=["GET"],
     tags=["bmx-alias"],
 )
-app.add_api_route(
+_add_alias(
     "/orion/v1/playback/station/{data}",
     bmx_orion_playback,
     methods=["GET", "POST"],
@@ -1782,92 +1821,92 @@ app.add_api_route(
 )
 
 # --- Marge root-level aliases ---
-app.add_api_route(
+_add_alias(
     "/streaming/sourceproviders",
     streamingsourceproviders,
     methods=["GET"],
     tags=["marge-alias"],
 )
-app.add_api_route(
+_add_alias(
     "/streaming/account/{account}/full",
     account_full,
     methods=["GET"],
     tags=["marge-alias"],
 )
-app.add_api_route("/streaming/support/power_on", power_on, methods=["POST"], tags=["marge-alias"])
-app.add_api_route(
+_add_alias("/streaming/support/power_on", power_on, methods=["POST"], tags=["marge-alias"])
+_add_alias(
     "/streaming/device/{device}/streaming_token",
     streaming_token,
     methods=["GET"],
     tags=["marge-alias"],
 )
-app.add_api_route(
+_add_alias(
     "/streaming/account/{account}/device/{device}/presets",
     account_presets,
     methods=["GET"],
     tags=["marge-alias"],
 )
-app.add_api_route(
+_add_alias(
     "/streaming/account/{account}/device/{device}/preset/{preset_number}",
     put_account_preset,
     methods=["PUT"],
     tags=["marge-alias"],
 )
-app.add_api_route(
+_add_alias(
     "/streaming/account/{account}/device/{device}/recents",
     account_recents,
     methods=["GET"],
     tags=["marge-alias"],
 )
-app.add_api_route(
+_add_alias(
     "/streaming/account/{account}/provider_settings",
     account_provider_settings,
     methods=["GET"],
     tags=["marge-alias"],
 )
-app.add_api_route(
+_add_alias(
     "/streaming/software/update/account/{account}",
     software_update,
     methods=["GET"],
     tags=["marge-alias"],
 )
-app.add_api_route(
+_add_alias(
     "/streaming/account/{account}/device/{device}/recent",
     post_account_recent,
     methods=["POST"],
     tags=["marge-alias"],
 )
-app.add_api_route(
+_add_alias(
     "/streaming/account/{account}/device/",
     post_account_device,
     methods=["POST"],
     tags=["marge-alias"],
 )
-app.add_api_route(
+_add_alias(
     "/streaming/account/{account}/device/{device}",
     delete_account_device,
     methods=["DELETE"],
     tags=["marge-alias"],
 )
-app.add_api_route(
+_add_alias(
     "/streaming/support/customersupport",
     customer_support_upload,
     methods=["POST"],
     tags=["marge-alias"],
 )
-app.add_api_route(
+_add_alias(
     "/streaming/device_setting/account/{account}/device/{device}/device_settings",
     get_device_settings,
     methods=["GET"],
     tags=["marge-alias"],
 )
-app.add_api_route(
+_add_alias(
     "/streaming/device_setting/account/{account}/device/{device}/device_settings",
     update_device_settings,
     methods=["POST"],
     tags=["marge-alias"],
 )
-app.add_api_route(
+_add_alias(
     "/streaming/account/{account}/emailaddress",
     get_email_address,
     methods=["GET"],
@@ -1877,80 +1916,80 @@ app.add_api_route(
 # --- Marge /accounts/ style aliases (gesellix/Bose-SoundTouch path format) ---
 # The Go project registers these shorter paths alongside /streaming/account/ paths.
 # Both path styles should work for maximum speaker firmware compatibility.
-app.add_api_route(
+_add_alias(
     "/marge/accounts/{account}/full",
     account_full,
     methods=["GET"],
     tags=["marge-alias"],
 )
-app.add_api_route("/accounts/{account}/full", account_full, methods=["GET"], tags=["marge-alias"])
-app.add_api_route(
+_add_alias("/accounts/{account}/full", account_full, methods=["GET"], tags=["marge-alias"])
+_add_alias(
     "/marge/accounts/{account}/devices/{device}/presets",
     account_presets,
     methods=["GET"],
     tags=["marge-alias"],
 )
-app.add_api_route(
+_add_alias(
     "/accounts/{account}/devices/{device}/presets",
     account_presets,
     methods=["GET"],
     tags=["marge-alias"],
 )
-app.add_api_route(
+_add_alias(
     "/marge/accounts/{account}/devices/{device}/presets/{preset_number}",
     put_account_preset,
     methods=["PUT"],
     tags=["marge-alias"],
 )
-app.add_api_route(
+_add_alias(
     "/accounts/{account}/devices/{device}/presets/{preset_number}",
     put_account_preset,
     methods=["PUT"],
     tags=["marge-alias"],
 )
-app.add_api_route(
+_add_alias(
     "/marge/accounts/{account}/devices/{device}/recents",
     account_recents,
     methods=["GET"],
     tags=["marge-alias"],
 )
-app.add_api_route(
+_add_alias(
     "/accounts/{account}/devices/{device}/recents",
     account_recents,
     methods=["GET"],
     tags=["marge-alias"],
 )
-app.add_api_route(
+_add_alias(
     "/marge/accounts/{account}/devices/{device}/recents",
     post_account_recent,
     methods=["POST"],
     tags=["marge-alias"],
 )
-app.add_api_route(
+_add_alias(
     "/accounts/{account}/devices/{device}/recents",
     post_account_recent,
     methods=["POST"],
     tags=["marge-alias"],
 )
-app.add_api_route(
+_add_alias(
     "/marge/accounts/{account}/devices",
     post_account_device,
     methods=["POST"],
     tags=["marge-alias"],
 )
-app.add_api_route(
+_add_alias(
     "/accounts/{account}/devices",
     post_account_device,
     methods=["POST"],
     tags=["marge-alias"],
 )
-app.add_api_route(
+_add_alias(
     "/marge/accounts/{account}/devices/{device}",
     delete_account_device,
     methods=["DELETE"],
     tags=["marge-alias"],
 )
-app.add_api_route(
+_add_alias(
     "/accounts/{account}/devices/{device}",
     delete_account_device,
     methods=["DELETE"],
